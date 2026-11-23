@@ -37,7 +37,7 @@ const conn = new Connection({
   onStatus: (s) => { status.hidden = s === 'online'; },
 });
 api = createApi(conn);
-window.Hearth = api;
+window.Hearth = window.Hearthfire = api;
 
 // ------------------------------------------------------------------ join page
 //
@@ -69,10 +69,10 @@ async function loadInfo() {
   // The version of the code this page loaded: sent when joining, so a page left open while the
   // server was updated is told to reload rather than run old code against the new server.
   conn.version ??= info.version;
-  document.title = `${info.world} · Hearth`;
+  document.title = `${info.world} · HearthfireVTT`;
   document.getElementById('join-world').textContent = info.world;
   document.getElementById('join-system').textContent = info.system_name;
-  document.getElementById('join-version').textContent = `Hearth ${info.version}`;
+  document.getElementById('join-version').textContent = `Hearthfire ${info.version}`;
   document.getElementById('detail-next').textContent = formatSession(info.next_session);
   document.getElementById('detail-players').textContent = `${info.players_online} / ${info.players_total}`;
   document.getElementById('detail-system').textContent = info.system_name;
@@ -344,7 +344,7 @@ function handle(msg) {
       api._emit(msg.from, msg.channel, msg.payload);
       break;
     case 'error':
-      // The server runs another version of Hearth: reload once to get its code (then rejoin).
+      // The server runs another version of Hearthfire: reload once to get its code (then rejoin).
       if (msg.code === 'version_mismatch' && sessionStorage.getItem('hearth.reloaded') !== msg.message) {
         sessionStorage.setItem('hearth.reloaded', msg.message);
         location.reload();

@@ -3,7 +3,7 @@ type = "system"
 name = "d20 Lite"
 version = "0.1.0"
 description = "A small, generic d20 ruleset: six abilities, levels, HP, AC and weapons."
-authors = ["Hearth contributors"]
+authors = ["HearthfireVTT contributors"]
 license = "CC0-1.0"
 # Kinds of rest (resources below say what each one restores).
 rests = ["short", "long"]

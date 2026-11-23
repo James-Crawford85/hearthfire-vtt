@@ -15,7 +15,7 @@ const hex = (s) => {
   return null;
 };
 
-/** A Foundry wall's kind in Hearth: what it blocks (movement, sight, sound) and whether it's a door. */
+/** A Foundry wall's kind in Hearthfire: what it blocks (movement, sight, sound) and whether it's a door. */
 export function foundryWallKind(w) {
   if (w.door === 1) return 'door';
   if (w.door === 2) return 'secret_door';
@@ -30,7 +30,7 @@ export function foundryWallKind(w) {
 }
 
 /**
- * A scene file read into what Hearth needs: { name, width, height, grid, darkness, walls, lights,
+ * A scene file read into what Hearthfire needs: { name, width, height, grid, darkness, walls, lights,
  * map: { x, y, w, h } (where the map goes and its size in the scene), image (embedded, as a Blob) }.
  */
 export function readSceneFile(json, name = 'Imported map') {
@@ -74,7 +74,7 @@ export function readSceneFile(json, name = 'Imported map') {
     // Padding: a blank border around the map, in whole squares (as Foundry adds it).
     const pad = Number(json.padding) || 0;
     const padX = Math.ceil((width * pad) / grid) * grid, padY = Math.ceil((height * pad) / grid) * grid;
-    // A grid shift moves the grid over the map; Hearth's grid starts at the corner, so move the rest.
+    // A grid shift moves the grid over the map; Hearthfire's grid starts at the corner, so move the rest.
     const sx = -(Number(json.shiftX) || 0), sy = -(Number(json.shiftY) || 0);
     const walls = [];
     for (const w of json.walls ?? []) {
@@ -88,7 +88,7 @@ export function readSceneFile(json, name = 'Imported map') {
       const alpha = Number(cfg.alpha ?? l.tintAlpha ?? 0);
       return { x: l.x + sx, y: l.y + sy, dim: Number(cfg.dim) || 0, bright: Number(cfg.bright) || 0, color: alpha > 0 ? hex(cfg.color ?? l.tintColor) : null };
     });
-    // "Global light": the whole map is lit whatever the darkness. Hearth hides what isn't lit
+    // "Global light": the whole map is lit whatever the darkness. Hearthfire hides what isn't lit
     // from half darkness up, so keep it just under that: dim, but everything visible.
     let darkness = Math.min(1, Math.max(0, Number(json.darkness) || 0));
     if (json.globalLight) darkness = Math.min(darkness, 0.45);
@@ -124,7 +124,7 @@ export function openSceneImport(api) {
     const file = f.scene.files[0];
     if (!file) return;
     let json;
-    try { json = JSON.parse(await file.text()); } catch { fail(`${file.name} isn't a scene file Hearth can read (not JSON).`); return; }
+    try { json = JSON.parse(await file.text()); } catch { fail(`${file.name} isn't a scene file Hearthfire can read (not JSON).`); return; }
     const sc = readSceneFile(json, file.name.replace(/\.[^.]+$/, ''));
     if (!sc) { fail(`${file.name} doesn't look like a Foundry-style or Universal VTT scene.`); return; }
     const mapFile = f.map.files[0] ?? (sc.image ? new File([sc.image], `${sc.name}.${sc.image.type.split('/')[1]}`, { type: sc.image.type }) : null);

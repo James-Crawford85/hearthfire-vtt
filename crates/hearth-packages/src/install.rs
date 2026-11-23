@@ -157,7 +157,7 @@ pub fn create_system(dest_root: &Path, name: &str, description: &str, taken: &dy
     let dir = dest_root.join(&id);
     std::fs::create_dir_all(&dir)?;
     let manifest = format!(
-        "id = \"{id}\"\ntype = \"system\"\nname = {}\nversion = \"0.1.0\"\ndescription = {}\n\n# Designed in Hearth's system builder (builder.json). Anything written\n# here by hand is merged over what the builder makes; see docs/rules.md.\n",
+        "id = \"{id}\"\ntype = \"system\"\nname = {}\nversion = \"0.1.0\"\ndescription = {}\n\n# Designed in Hearthfire's system builder (builder.json). Anything written\n# here by hand is merged over what the builder makes; see docs/rules.md.\n",
         toml_string(name),
         toml_string(description.trim()),
     );

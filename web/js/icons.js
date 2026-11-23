@@ -1,4 +1,4 @@
-// Hearth's interface icons: simple 24×24 stroke drawings, coloured by CSS
+// Hearthfire's interface icons: simple 24×24 stroke drawings, coloured by CSS
 // (`currentColor`). icon('name') returns an <svg> element.
 
 const P = {

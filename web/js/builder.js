@@ -855,7 +855,7 @@ export class Builder {
 
   editStyle() {
     const s = (this.bp.style && typeof this.bp.style === 'object') ? this.bp.style : (this.bp.style = {});
-    const FONTS = [['', 'Hearth default'], ['system-ui, sans-serif', 'Sans-serif'], ['Georgia, "Times New Roman", serif', 'Serif'],
+    const FONTS = [['', 'Hearthfire default'], ['system-ui, sans-serif', 'Sans-serif'], ['Georgia, "Times New Roman", serif', 'Serif'],
       ['"Palatino Linotype", "Book Antiqua", Palatino, serif', 'Book (Palatino)'], ['"Trebuchet MS", sans-serif', 'Humanist (Trebuchet)'],
       ['"Courier New", monospace', 'Typewriter']];
     const color = (key, labelText) => {

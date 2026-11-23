@@ -78,7 +78,7 @@ export function appearanceSettings() {
       on: { change: (e) => { setAppearance({ glass: e.target.checked }); opts.hidden = !e.target.checked; } } }),
     el('span', { text: 'Glass: see-through frosted panels and windows' })),
     opts,
-    el('p.hint.muted', { text: 'Only changes how Hearth looks for you, on this browser.' }));
+    el('p.hint.muted', { text: 'Only changes how Hearthfire looks for you, on this browser.' }));
   return wrap;
 }
 

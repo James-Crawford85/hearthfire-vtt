@@ -829,7 +829,7 @@ const packs = {
   spells: ['Spells', SPELLS, true],
   gear: ['Adventuring gear', GEAR, true],
 };
-// Entries added from inside Hearth ("Add to the system's collection") are kept.
+// Entries added from inside Hearthfire ("Add to the system's collection") are kept.
 const writePack = (file, docs) => {
   const at = path.join(out, 'packs', `${file}.json`);
   let kept = [];
@@ -852,7 +852,7 @@ attribution = ${JSON.stringify(NOTICE_TEXT)}
 
 # ${NOTICE}
 
-# The character and item types are designed in Hearth's system builder
+# The character and item types are designed in Hearthfire's system builder
 # (builder.json). Anything written here by hand is merged over them.
 
 [combat]

@@ -160,7 +160,7 @@ export function sheetTemplate(type) {
   Sheet for "${esc(label(type))}", made from its layout in the system builder.
   Edit it freely in any text editor; the system uses it instead of the
   generated sheet (System builder → this type → Sheet → "Use the generated
-  sheet again" switches back). The reference is docs/sheets.md in Hearth.
+  sheet again" switches back). The reference is docs/sheets.md in Hearthfire.
 
   {{derived.path}}                  a calculated value (formulas, resource max)
   {{data.path}}                     a stored value, as text
@@ -206,7 +206,7 @@ export function itemSheetTemplate(type) {
     const body = nodes((type.children ?? []).filter((n) => n.kind !== 'effect'), [], bp, 4);
     return `<!--
   Sheet for the item type "${esc(label(type))}", made in the system builder. Edit it freely;
-  System builder → this type → Sheet switches back. The reference is docs/sheets.md in Hearth.
+  System builder → this type → Sheet switches back. The reference is docs/sheets.md in Hearthfire.
 
   {{item.name}} {{item.id}}                     the item
   {{data.path}}                                 a stored value of the item, as text

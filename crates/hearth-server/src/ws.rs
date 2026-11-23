@@ -27,8 +27,8 @@ pub fn version_mismatch(client: Option<&str>) -> Option<String> {
     let server = env!("CARGO_PKG_VERSION");
     match client.map(str::trim) {
         Some(v) if v == server => None,
-        Some(v) if !v.is_empty() => Some(format!("This game runs Hearth {server}, but this page is Hearth {v}. Reload the page to update it.")),
-        _ => Some(format!("This game was updated to Hearth {server}. Reload the page to update it.")),
+        Some(v) if !v.is_empty() => Some(format!("This game runs Hearthfire {server}, but this page is Hearthfire {v}. Reload the page to update it.")),
+        _ => Some(format!("This game was updated to Hearthfire {server}. Reload the page to update it.")),
     }
 }
 
@@ -47,7 +47,7 @@ async fn connection(socket: WebSocket, state: Arc<AppState>) {
         },
         _ => return,
     };
-    // A client must run the same version of Hearth as the server: a page left open while the
+    // A client must run the same version of Hearthfire as the server: a page left open while the
     // server was updated (or anything else out of date) is told to reload instead of joining.
     if let Some(message) = version_mismatch(req.version.as_deref()) {
         let _ = send(&mut sink, &ServerMsg::Error { message, code: Some("version_mismatch".into()) }).await;

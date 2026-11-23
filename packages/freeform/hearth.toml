@@ -1,5 +1,5 @@
 # The smallest possible system: no scripts, no sheets.
-# Hearth generates a form from the template automatically.
+# Hearthfire generates a form from the template automatically.
 id = "freeform"
 type = "system"
 name = "Freeform"

@@ -639,7 +639,7 @@ export class Sidebar {
         el('h4', { text: 'Theme' }),
         el('select', {
           on: { change: (e) => this.api.op({ op: 'world_update', patch: { theme: e.target.value || null } }) },
-        }, el('option', { value: '', text: 'Hearth (default)' }),
+        }, el('option', { value: '', text: 'Hearthfire (default)' }),
         ...themes.map((t) => el('option', { value: t.id, text: t.name, selected: w.theme === t.id }))),
         el('h4', { text: 'Modules' }),
         modules.length ? el('ul.modules', {}, ...modules.map((m) => el('li', {}, el('label.check', {},

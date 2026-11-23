@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use hearth_server::{start, ServerConfig};
 
-/// Hearth — an open-source virtual tabletop server.
+/// Hearthfire — an open-source virtual tabletop server.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
 
     let port = server.addr.port();
     println!();
-    println!("  Hearth is running.");
+    println!("  Hearthfire is running.");
     println!("  World:    {} ({})", server.world_name, args.world.display());
     println!("  Open:     http://localhost:{port}");
     if let Some(ip) = hearth_server::lan_ip() {

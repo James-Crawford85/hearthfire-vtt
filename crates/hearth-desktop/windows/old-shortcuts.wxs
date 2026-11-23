@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hearth was renamed HearthfireVTT in 0.2.0. The MSI upgrade removes the old Hearth program,
+  but Tauri's template keeps shortcuts during an upgrade (it expects the new ones to have the
+  same name), so the old "Hearth" Start menu and desktop shortcuts would be left pointing at
+  nothing. This component removes them when HearthfireVTT installs.
+  Wired up in tauri.conf.json: bundle > windows > wix > fragmentPaths and componentRefs.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Directory Id="OldHearthProgramsFolder" Name="Hearth" />
+    </DirectoryRef>
+    <DirectoryRef Id="OldHearthProgramsFolder">
+      <Component Id="RemoveOldHearthShortcuts" Guid="7b0c4d2e-3f61-4a8e-9c55-2d1e8a6f4b90">
+        <RemoveFile Id="OldHearthStartMenuShortcut" Name="Hearth.lnk" On="install" />
+        <RemoveFile Id="OldHearthDesktopShortcut" Directory="DesktopFolder" Name="Hearth.lnk" On="install" />
+        <RemoveFolder Id="OldHearthProgramsFolder" On="install" />
+        <RegistryValue Root="HKCU" Key="Software\hearthvtt\HearthfireVTT" Name="Old Hearth Shortcuts Removed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

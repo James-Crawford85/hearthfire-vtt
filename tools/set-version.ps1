@@ -1,4 +1,4 @@
-# Prints or sets Hearth's version in the two places it lives:
+# Prints or sets Hearthfire's version in the two places it lives:
 #   Cargo.toml                                ([workspace.package] version)
 #   crates/hearth-desktop/tauri.conf.json     ("version")
 #

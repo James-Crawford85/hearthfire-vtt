@@ -21,7 +21,7 @@ pub struct JoinRequest {
     pub user_id: Option<Id>,
     #[serde(default)]
     pub password: Option<String>,
-    /// The Hearth version of the client's code. A join from another version (or none: a page
+    /// The Hearthfire version of the client's code. A join from another version (or none: a page
     /// loaded before the server was updated) is refused with the code `version_mismatch`.
     #[serde(default)]
     pub version: Option<String>,

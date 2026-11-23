@@ -1,4 +1,4 @@
-// Hearth desktop launcher. Talks to the Rust side (src/commands.rs) through Tauri commands.
+// Hearthfire desktop launcher. Talks to the Rust side (src/commands.rs) through Tauri commands.
 const { invoke } = window.__TAURI__.core;
 const $ = (id) => document.getElementById(id);
 
@@ -332,7 +332,7 @@ async function editWorld(w) {
       h('div', { class: 'small muted', text: `Game system: ${pkgName(w.system)} (fixed when the world is created). Add players and their passwords in-game under Settings.` }),
       h('label', {}, 'Next session', h('input', { name: 'next_session', type: 'datetime-local', value: w.next_session ?? '' })),
       h('label', {}, 'Theme', h('select', { name: 'theme' },
-        h('option', { value: '', text: 'Hearth (default)' }),
+        h('option', { value: '', text: 'Hearthfire (default)' }),
         themes.map((t) => h('option', { value: t.id, text: t.name, selected: w.theme === t.id })))),
       h('div', { class: 'small muted', text: 'Modules' }),
       modules.length
@@ -539,17 +539,17 @@ async function checkUpdate({ quiet = false } = {}) {
   $('update-btn').title = u.available ? `Version ${u.latest} is available` : 'Check for updates';
   if (quiet) return;
   if (!u.configured) {
-    await dialog({ title: 'Updates', body: [h('p', { text: `You're running Hearth ${u.current}. Update checks switch on once Hearth publishes releases on GitHub.` })], ok: null, cancel: 'Close' });
+    await dialog({ title: 'Updates', body: [h('p', { text: `You're running Hearthfire ${u.current}. Update checks switch on once Hearthfire publishes releases on GitHub.` })], ok: null, cancel: 'Close' });
   } else if (u.available && u.can_install) {
     await installDialog(u);
   } else if (u.available) {
     // Older releases can't be installed from inside the app; send them to the page.
-    const go = await dialog({ title: 'Update available', body: [h('p', { text: `Hearth ${u.latest} is available (you have ${u.current}).` })], ok: 'Download', cancel: 'Later' });
+    const go = await dialog({ title: 'Update available', body: [h('p', { text: `Hearthfire ${u.latest} is available (you have ${u.current}).` })], ok: 'Download', cancel: 'Later' });
     if (go && u.url) call('open_url', { url: u.url }).catch(() => {});
   } else if (!u.latest) {
-    toast(`You're running Hearth ${u.current}. No releases have been published on GitHub yet.`);
+    toast(`You're running Hearthfire ${u.current}. No releases have been published on GitHub yet.`);
   } else {
-    toast(`You're up to date (Hearth ${u.current}).`);
+    toast(`You're up to date (Hearthfire ${u.current}).`);
   }
 }
 /** "Update now" dialog: download with a progress bar, install, relaunch. */
@@ -566,7 +566,7 @@ async function installDialog(u) {
       bar.hidden = false;
       if (payload.installing) {
         bar.removeAttribute('value'); // indeterminate
-        status.textContent = 'Installing… Hearth will restart in a moment.';
+        status.textContent = 'Installing… Hearthfire will restart in a moment.';
       } else if (payload.total) {
         bar.value = Math.round((payload.downloaded / payload.total) * 100);
         status.textContent = `Downloading… ${size(payload.downloaded)} of ${size(payload.total)}`;
@@ -576,10 +576,10 @@ async function installDialog(u) {
     });
   } catch { /* progress is nice-to-have */ }
   await dialog({
-    title: `Update to Hearth ${u.latest}`,
+    title: `Update to Hearthfire ${u.latest}`,
     wide: true,
     body: [
-      h('p', { text: `You have ${u.current}. Hearth downloads the right version for this computer, installs it and restarts.` }),
+      h('p', { text: `You have ${u.current}. Hearthfire downloads the right version for this computer, installs it and restarts.` }),
       notes, hostingNote, bar, status,
       u.url ? h('button', { type: 'button', class: 'link', text: 'View the release on GitHub', on: { click: () => call('open_url', { url: u.url }).catch(() => {}) } }) : null,
     ],
@@ -615,14 +615,14 @@ $('check-update-btn').addEventListener('click', () => checkUpdate());
     $('path-worlds').textContent = state.info.worlds_dir;
     $('path-packages').textContent = state.info.packages_dir;
     $('path-backups').textContent = state.info.backups_dir;
-    $('version-line').textContent = `Hearth ${state.info.version}${state.info.dev_build ? ' (development build)' : ''}`;
+    $('version-line').textContent = `Hearthfire ${state.info.version}${state.info.dev_build ? ' (development build)' : ''}`;
     if (state.info.dev_build) {
-      // Make it obvious which Hearth is open when an installed copy exists too.
+      // Make it obvious which Hearthfire is open when an installed copy exists too.
       document.querySelector('.top-actions').prepend(h('span', {
         class: 'dev-badge', text: 'DEV BUILD',
         title: `Running from source. Game client: ${state.info.web_dir}`,
       }));
-      document.title = 'Hearth (dev)';
+      document.title = 'HearthfireVTT (dev)';
     }
     await refreshPackages();
     await refreshWorlds();

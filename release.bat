@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem  Hearth release helper
+rem  Hearthfire release helper
 rem
 rem  Asks for a version, sets it in Cargo.toml and tauri.conf.json, commits,
 rem  tags vX.Y.Z and pushes. GitHub Actions then builds installers for every
@@ -8,10 +8,10 @@ rem  platform into a DRAFT release; publish it on GitHub when you're happy.
 rem ---------------------------------------------------------------------------
 setlocal EnableExtensions
 cd /d "%~dp0"
-set "REPO_URL=https://github.com/James-Crawford85/hearth-vtt"
+set "REPO_URL=https://github.com/James-Crawford85/hearthfire-vtt"
 
 echo.
-echo  Hearth release
+echo  Hearthfire release
 echo  ==============
 echo.
 
@@ -83,7 +83,7 @@ if errorlevel 1 (
 ) else (
   echo  Version was already %VER%; tagging the current commit.
 )
-git tag -a "%TAG%" -m "Hearth %TAG%" || goto :fail
+git tag -a "%TAG%" -m "Hearthfire %TAG%" || goto :fail
 
 echo  Pushing to GitHub...
 git push --quiet origin main || (echo  Push of main failed. Your commit and tag are still here; fix the problem and run:& echo    git push origin main ^&^& git push origin %TAG%& goto :fail)

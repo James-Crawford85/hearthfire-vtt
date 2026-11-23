@@ -12,7 +12,7 @@
 `hearth-desktop` is a [Tauri](https://tauri.app) app. It uses the system web view (WebView2 on Windows, WebKitGTK on Linux, WebKit on macOS), so it stays small and runs the exact same web client as browsers.
 
 ```
- ┌──────────── Hearth desktop app ─────────────┐
+ ┌────────── Hearthfire desktop app ───────────┐
  │ launcher (ui/)  ──host_world──▶ hearth-server (in-process, :30080)
  │      │                                │      │◀── players: browser or app
  │      └── navigates the window to ─────┘      │
@@ -20,8 +20,8 @@
  └─────────────────────────────────────────────┘
 ```
 
-- `hearth-server` is a library (`start(config) -> RunningServer`, `stop()`), and the `hearth` binary is a thin CLI on top of it. The app calls the same `start`.
-- The launcher is the only page that can call app commands. Game pages are ordinary pages from a Hearth server (local or remote) and get no app permissions. An injected script only adds the ⌂ back-to-launcher button.
+- `hearth-server` is a library (`start(config) -> RunningServer`, `stop()`), and the `hearthfire` binary is a thin CLI on top of it. The app calls the same `start`.
+- The launcher is the only page that can call app commands. Game pages are ordinary pages from a Hearthfire server (local or remote) and get no app permissions. An injected script only adds the ⌂ back-to-launcher button.
 - The launcher hands the player name and GM key to the game page in the URL *fragment*, which browsers never send to the server. The page moves them to `sessionStorage` and clears the address.
 - Packages load from the bundled folder and then the user's `packages` folder, so user copies override bundled ones by id.
 - Quitting the app stops the hosted server, which saves the world.
@@ -30,8 +30,8 @@
 
 A game page always comes from the server it plays on, so it runs that server's version of the web client. Versions can still drift, in two ways, and both are refused rather than allowed to misbehave:
 
-- **A page left open while the host updates.** The page keeps its old code and quietly reconnects. Every `join` message carries the client's version: the version from `/api/info` when the page loaded, kept from then on. The server refuses a join whose version isn't exactly its own, or that has none (pages from before this rule), with `{"type":"error","code":"version_mismatch","message":"This game was updated to Hearth 0.1.9. Reload the page…"}`. The web client reloads once to get the new code, and rejoins with its saved session if the server still has it. Older pages just show the message.
-- **The desktop app joining a host on another version.** Before opening the game, the launcher compares its own version with the host's `/api/info` and stops with who needs to update: "Update Hearth" when the host is newer, "Ask the host to update" when it's older.
+- **A page left open while the host updates.** The page keeps its old code and quietly reconnects. Every `join` message carries the client's version: the version from `/api/info` when the page loaded, kept from then on. The server refuses a join whose version isn't exactly its own, or that has none (pages from before this rule), with `{"type":"error","code":"version_mismatch","message":"This game was updated to Hearthfire 0.1.9. Reload the page…"}`. The web client reloads once to get the new code, and rejoins with its saved session if the server still has it. Older pages just show the message.
+- **The desktop app joining a host on another version.** Before opening the game, the launcher compares its own version with the host's `/api/info` and stops with who needs to update: "Update Hearthfire" when the host is newer, "Ask the host to update" when it's older.
 
 ## One world, one document
 

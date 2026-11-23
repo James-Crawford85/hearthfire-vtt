@@ -1,6 +1,6 @@
 # System builder
 
-The system builder lets a GM design a game system inside Hearth, without editing files: the stats, resources, lists, rolls and item types, and the rules that connect them. It's in **Settings → 🛠 System builder** (GM only) and edits the system the current world uses.
+The system builder lets a GM design a game system inside Hearthfire, without editing files: the stats, resources, lists, rolls and item types, and the rules that connect them. It's in **Settings → 🛠 System builder** (GM only) and edits the system the current world uses.
 
 **Starting a system.** In the launcher's **Game Systems** tab, **New system** makes an empty one, then offers to make a world that uses it (a "workshop" world to build it in). Built-in systems can't be changed, so they have **Copy to edit**, which makes your own copy under a new name; systems you made or installed have **Copy** too.
 
@@ -128,10 +128,10 @@ In `builder.json` this is `creation`; each world's choices are `settings.core.cr
 
 ## Where it's saved
 
-The builder writes `builder.json` in the system's folder. When Hearth loads the system it compiles that file into data templates and rules: the same things a hand-written `hearth.toml` declares (see [packages.md](packages.md) and [rules.md](rules.md)). So:
+The builder writes `builder.json` in the system's folder. When Hearthfire loads the system it compiles that file into data templates and rules: the same things a hand-written `hearth.toml` declares (see [packages.md](packages.md) and [rules.md](rules.md)). So:
 
 - A system can mix both: hand-written parts of `hearth.toml` win where both say something, and anything the builder can't express (custom sheets, Rhai scripts) still works.
 - Sheets are laid out from the tree, unless the system has its own sheet template or a module registers a custom sheet.
 - Systems made in the builder share like any other: zip the folder.
 
-Systems that came with Hearth live in the app's install folder and can't be changed; the builder says so if you try. Copy the system to your packages folder (shown on the launcher) under a new id to edit it.
+Systems that came with Hearthfire live in the app's install folder and can't be changed; the builder says so if you try. Copy the system to your packages folder (shown on the launcher) under a new id to edit it.

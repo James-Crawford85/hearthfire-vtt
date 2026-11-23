@@ -160,7 +160,7 @@ The builder lists problems in a layout, such as a block pointing at a field that
 
 ## Custom HTML sheets
 
-In the system builder, select a type and set its **Sheet** to **Custom HTML**, then **Make the HTML file**. Hearth writes `sheets/<type>.html` (item types: `sheets/item-<type>.html`) into the system's folder, made from the generated sheet, and the type uses it from then on. Edit it in any text editor; reload the world to see changes. Switching the setting back keeps the file.
+In the system builder, select a type and set its **Sheet** to **Custom HTML**, then **Make the HTML file**. Hearthfire writes `sheets/<type>.html` (item types: `sheets/item-<type>.html`) into the system's folder, made from the generated sheet, and the type uses it from then on. Edit it in any text editor; reload the world to see changes. Switching the setting back keeps the file.
 
 You can also write one from scratch and point `actor_types.<kind>.sheet` (or `item_types.<kind>.sheet`) at it in `hearth.toml`.
 

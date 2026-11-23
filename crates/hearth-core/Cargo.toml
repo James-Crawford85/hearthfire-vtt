@@ -1,6 +1,6 @@
 [package]
 name = "hearth-core"
-description = "World model, operations and wire protocol for Hearth VTT"
+description = "World model, operations and wire protocol for HearthfireVTT"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

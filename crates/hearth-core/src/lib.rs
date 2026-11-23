@@ -1,4 +1,4 @@
-//! Hearth core: the world document model, the operations that mutate it,
+//! Hearthfire core: the world document model, the operations that mutate it,
 //! and the messages exchanged between server and clients.
 //!
 //! Everything that changes a world goes through an [`Op`]. The server applies

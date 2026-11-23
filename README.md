@@ -1,13 +1,13 @@
-# Hearth
+# HearthfireVTT
 
-[![CI](https://github.com/James-Crawford85/hearth-vtt/actions/workflows/ci.yml/badge.svg)](https://github.com/James-Crawford85/hearth-vtt/actions/workflows/ci.yml)
+[![CI](https://github.com/James-Crawford85/hearthfire-vtt/actions/workflows/ci.yml/badge.svg)](https://github.com/James-Crawford85/hearthfire-vtt/actions/workflows/ci.yml)
 
 **A free, open-source virtual tabletop written in Rust.**
 The desktop app hosts your world (or joins someone else's); players join from the app or any browser. Game systems, modules and themes are plain folders or zip files, with no paywall, no license key and no lock-in.
 
 > Status: early prototype (v0.1). The core loop works: scenes, tokens, actors, sheets, chat, dice, packages. See the [roadmap](#roadmap).
 
-**Download:** installers for Windows, macOS and Linux are on the [Releases page](https://github.com/James-Crawford85/hearth-vtt/releases). Builds aren't code-signed yet, so Windows SmartScreen will warn you: choose *More info → Run anyway*.
+**Download:** installers for Windows, macOS and Linux are on the [Releases page](https://github.com/James-Crawford85/hearthfire-vtt/releases). Builds aren't code-signed yet, so Windows SmartScreen will warn you: choose *More info → Run anyway*.
 
 ## Features
 
@@ -30,7 +30,7 @@ The desktop app hosts your world (or joins someone else's); players join from th
 - **Combat tracker:** start an encounter from the scene's tokens, roll initiative with the system's formula (GM for NPCs, players for their own characters), step through turns and rounds, mark combatants defeated or hidden. The active token glows on the board and players are told when it's their turn.
 - **Player accounts:** the GM adds players (Settings → Players) with a temporary password. Players pick their name on the join page; on first login they choose their own password. Passwords are stored as Argon2 hashes, separately from the world data. The join page also shows the world description, the next session and who's online.
 - **Packages:**
-  - **System builder:** design a system inside Hearth as a tree of stats, resources, lists, rolls and item types, with formulas connecting them. It saves as you go and sheets update live. Start from a blank system or a copy of another (launcher → Game Systems). Classes, ancestries and backgrounds give features through grants (items, choices, ability points, hit-point rolls), with a level-up dialog that can also undo a level ([docs/builder.md](docs/builder.md)).
+  - **System builder:** design a system inside Hearthfire as a tree of stats, resources, lists, rolls and item types, with formulas connecting them. It saves as you go and sheets update live. Start from a blank system or a copy of another (launcher → Game Systems). Classes, ancestries and backgrounds give features through grants (items, choices, ability points, hit-point rolls), with a level-up dialog that can also undo a level ([docs/builder.md](docs/builder.md)).
   - **Systems** define the rules: actor/item types, sheets, and declared rules worked out on the server: formulas, lookup tables, resources that reset on rests, actions (attack, then damage, with advantage and crits), item effects and conditions ([docs/rules.md](docs/rules.md)). Anything beyond that goes in sandboxed [Rhai](https://rhai.rs) scripts.
   - **Modules** add features through a hook-based client API and/or server scripts.
   - **Themes** are just CSS that override design tokens.
@@ -38,7 +38,7 @@ The desktop app hosts your world (or joins someone else's); players join from th
 
 ## Two ways to run it
 
-**Desktop app (recommended for GMs).** Like other desktop VTTs, the app *is* the server. Pick a world and press **Launch**: Hearth starts hosting it and opens it for you as GM. The launcher shows the address to give your players. Players can join with the same app (**Join a game**) or from any browser. Press ⌂ in a game to go back to the launcher; a hosted world keeps running until you press **Stop** or quit.
+**Desktop app (recommended for GMs).** Like other desktop VTTs, the app *is* the server. Pick a world and press **Launch**: Hearthfire starts hosting it and opens it for you as GM. The launcher shows the address to give your players. Players can join with the same app (**Join a game**) or from any browser. Press ⌂ in a game to go back to the launcher; a hosted world keeps running until you press **Stop** or quit.
 
 The launcher has four tabs:
 
@@ -51,7 +51,7 @@ The launcher has four tabs:
 
 **Backups:** each world can be backed up on demand, and automatically on every launch (the last 5 automatic ones are kept by default). Restoring first backs up the current state. Deleting a world keeps a final backup, so a deleted world can be brought back.
 
-**Standalone server (for always-on or headless hosting).** Run the `hearth` binary on a PC, home server or VPS; everyone joins from a browser or the app.
+**Standalone server (for always-on or headless hosting).** Run the `hearthfire` binary on a PC, home server or VPS; everyone joins from a browser or the app.
 
 ## Quick start
 
@@ -109,7 +109,7 @@ crates/
   hearth-dice       dice parser + roller (no deps beyond rand)
   hearth-core       world model, ops, merge-patch, wire protocol
   hearth-packages   package manifests, registry, Rhai script host
-  hearth-server     server library + the `hearth` binary: HTTP, WebSocket, persistence
+  hearth-server     server library + the `hearthfire` binary: HTTP, WebSocket, persistence
   hearth-desktop    Tauri desktop app: launcher, hosts worlds in-process, joins others
 web/                browser client (vanilla ES modules), shared by browser and app
 tools/              make-icons.mjs (regenerates the app icons)

@@ -29,7 +29,7 @@ fn errs(e: anyhow::Error) -> String {
 }
 
 /// GitHub "owner/repo" whose published releases the update check looks at.
-const UPDATE_REPO: Option<&str> = Some("James-Crawford85/hearth-vtt");
+const UPDATE_REPO: Option<&str> = Some("James-Crawford85/hearthfire-vtt");
 const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
 
 // ------------------------------------------------------------------ app & settings
@@ -173,7 +173,7 @@ pub async fn install_update(app: AppHandle, state: State<'_, Desktop>) -> R<()> 
     if let Err(e) = result {
         return Err(format!("Update failed: {e}"));
     }
-    // Windows: the installer has already taken over and restarts Hearth itself.
+    // Windows: the installer has already taken over and restarts Hearthfire itself.
     // macOS/Linux: the new files are in place; start them.
     app.restart();
 }
@@ -295,7 +295,7 @@ pub fn host_info(h: &Hosted, lan: bool) -> HostInfo {
 const PORT_TRIES: u16 = 20;
 
 /// The preferred port if it's free, else the next free one after it. Another
-/// Hearth (a second app window or a standalone server) may hold the default.
+/// Hearthfire (a second app window or a standalone server) may hold the default.
 fn free_port(host: &str, preferred: u16) -> Option<u16> {
     (0..PORT_TRIES)
         .filter_map(|i| preferred.checked_add(i))
@@ -336,7 +336,7 @@ pub async fn host_world(state: State<'_, Desktop>, id: String) -> R<HostInfo> {
     let host = if settings.allow_network { "0.0.0.0" } else { "127.0.0.1" };
     let port = free_port(host, settings.port).ok_or_else(|| {
         format!(
-            "Ports {}–{} are all in use. Close other Hearth windows or servers, or pick another port in Settings.",
+            "Ports {}–{} are all in use. Close other Hearthfire windows or servers, or pick another port in Settings.",
             settings.port,
             settings.port.saturating_add(PORT_TRIES - 1)
         )
@@ -388,7 +388,7 @@ fn normalize_address(raw: &str) -> R<tauri::Url> {
     if url.host_str().is_none() {
         return Err("Missing host name".into());
     }
-    // An http address typed without a port means Hearth's default port, not 80.
+    // An http address typed without a port means Hearthfire's default port, not 80.
     let authority = with_scheme.split("://").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("");
     let host_end = authority.rfind(']').map_or(0, |i| i + 1); // skip IPv6 brackets
     let has_port = authority[host_end..].contains(':');
@@ -411,9 +411,9 @@ fn version_problem(ours: &str, theirs: &str) -> Option<String> {
         return None;
     }
     Some(if a < b {
-        format!("This game runs Hearth {theirs}, newer than yours ({ours}). Update Hearth (it offers updates when it starts) and join again.")
+        format!("This game runs Hearthfire {theirs}, newer than yours ({ours}). Update Hearthfire (it offers updates when it starts) and join again.")
     } else {
-        format!("This game runs Hearth {theirs}, older than yours ({ours}). Ask the host to update Hearth, then join again.")
+        format!("This game runs Hearthfire {theirs}, older than yours ({ours}). Ask the host to update Hearthfire, then join again.")
     })
 }
 
@@ -451,14 +451,14 @@ pub async fn join_game(state: State<'_, Desktop>, address: String, player_name: 
             .collect();
         let reachable = addrs.iter().any(|a| std::net::TcpStream::connect_timeout(a, Duration::from_secs(4)).is_ok());
         if !reachable {
-            return Err(format!("No Hearth server answered at {host}:{port}"));
+            return Err(format!("No Hearthfire server answered at {host}:{port}"));
         }
         Ok(fetch_info(&probe_url))
     })
     .await
     .map_err(err)??;
 
-    // The game only works when the host and this app run the same version of Hearth.
+    // The game only works when the host and this app run the same version of Hearthfire.
     if let Some(theirs) = info.as_ref().and_then(|i| i["version"].as_str()) {
         if let Some(message) = version_problem(env!("CARGO_PKG_VERSION"), theirs) {
             return Err(message);
@@ -564,7 +564,7 @@ pub struct PackageCard {
     authors: Vec<String>,
     license: Option<String>,
     systems: Vec<String>,
-    /// "bundled" ships with Hearth; "installed" was added by the user.
+    /// "bundled" ships with Hearthfire; "installed" was added by the user.
     source: &'static str,
     /// Names of hosted worlds using this package.
     used_by: Vec<String>,
@@ -644,7 +644,7 @@ pub async fn install_package_url(state: State<'_, Desktop>, url: String) -> R<In
 pub async fn install_package_file(app: AppHandle, state: State<'_, Desktop>) -> R<Option<Installed>> {
     let dest = state.user_packages.clone();
     tokio::task::spawn_blocking(move || {
-        let Some(picked) = app.dialog().file().set_title("Install a Hearth package").add_filter("Hearth package", &["zip"]).blocking_pick_file()
+        let Some(picked) = app.dialog().file().set_title("Install a Hearthfire package").add_filter("Hearthfire package", &["zip"]).blocking_pick_file()
         else {
             return Ok(None);
         };
@@ -674,7 +674,7 @@ pub fn copy_package(state: State<'_, Desktop>, id: String, name: String) -> R<In
 #[tauri::command]
 pub fn uninstall_package(state: State<'_, Desktop>, id: String) -> R<()> {
     if !state.user_packages.join(&id).join("hearth.toml").is_file() {
-        return Err("Only packages you installed can be removed; built-in ones ship with Hearth".into());
+        return Err("Only packages you installed can be removed; built-in ones ship with Hearthfire".into());
     }
     install::uninstall(&state.user_packages, &id).map_err(err)
 }
@@ -707,7 +707,7 @@ mod tests {
     fn joining_needs_the_same_version() {
         assert_eq!(version_problem("0.1.8", "0.1.8"), None);
         assert_eq!(version_problem("0.1.8", "v0.1.8"), None);
-        assert!(version_problem("0.1.5", "0.1.8").unwrap().contains("Update Hearth"));
+        assert!(version_problem("0.1.5", "0.1.8").unwrap().contains("Update Hearthfire"));
         assert!(version_problem("0.1.9", "0.1.8").unwrap().contains("Ask the host"));
         assert!(version_problem("0.1.10", "0.1.9").unwrap().contains("Ask the host"), "compared as numbers, not text");
     }

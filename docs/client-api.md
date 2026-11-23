@@ -1,6 +1,6 @@
 # Client API
 
-Every package script receives the API as `init(hearth, pkg)`. It's also on `window.Hearth` for the browser console.
+Every package script receives the API as `init(hearth, pkg)`. It's also on `window.Hearthfire` (or the older `window.Hearth`) for the browser console.
 
 ## State (read-only, keep in sync automatically)
 
@@ -98,7 +98,7 @@ A map can be an image or a video (MP4 or WebM) for an animated map. A video play
 
 **Importing a ready-made map.** **Import map…** in the Scenes tab makes a scene from a map exported by Dungeon Alchemist, Dungeondraft and similar tools, grid, walls, doors and lights included:
 
-- **Foundry-style scene JSON** (Dungeon Alchemist's export, beside its PNG or MP4): choose the JSON and the map. Walls become Hearth's wall kinds by what they block: movement and sight make a wall; movement only, a window (or an invisible wall if it lets sound through); sight only, an ethereal wall; limited sight, terrain; doors and secret doors stay doors, locked or open as exported. Lights keep their ranges (in the scene's units) and their colour when it's tinted. Padding and grid shift are respected. "Global light" keeps the darkness under half, so the whole map stays visible.
+- **Foundry-style scene JSON** (Dungeon Alchemist's export, beside its PNG or MP4): choose the JSON and the map. Walls become Hearthfire's wall kinds by what they block: movement and sight make a wall; movement only, a window (or an invisible wall if it lets sound through); sight only, an ethereal wall; limited sight, terrain; doors and secret doors stay doors, locked or open as exported. Lights keep their ranges (in the scene's units) and their colour when it's tinted. Padding and grid shift are respected. "Global light" keeps the darkness under half, so the whole map stays visible.
 - **Universal VTT** (`.dd2vtt`, `.uvtt`): the map image is inside the file. Lines of sight become walls, portals become doors, and light ranges in squares become distances.
 
 Vision is switched on when the map has walls, so players see only what their tokens see.

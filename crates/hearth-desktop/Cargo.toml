@@ -1,6 +1,6 @@
 [package]
 name = "hearth-desktop"
-description = "Hearth desktop app: host a world or join one"
+description = "Hearthfire desktop app: host a world or join one"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

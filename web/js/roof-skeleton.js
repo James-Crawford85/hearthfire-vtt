@@ -1,4 +1,4 @@
-// Hearth — roof shapes. A building's roof rectangles that touch or overlap (same level, same
+// Hearthfire — roof shapes. A building's roof rectangles that touch or overlap (same level, same
 // material) make one roof: their union is traced as an outline, and the outline's straight
 // skeleton gives the roof's planes — one per wall edge, sloping up from it — and the lines
 // where planes meet (ridges, hips over outside corners, valleys from inside corners).

@@ -37,7 +37,7 @@ All paths are relative to the package folder and can't leave it. Files are serve
 
 ## Systems
 
-A world uses exactly one system, chosen when the world is created (`--system`). The smallest possible system is a manifest with one actor type (see `packages/freeform`). Hearth generates a sheet from the template.
+A world uses exactly one system, chosen when the world is created (`--system`). The smallest possible system is a manifest with one actor type (see `packages/freeform`). Hearthfire generates a sheet from the template.
 
 ## Rules
 

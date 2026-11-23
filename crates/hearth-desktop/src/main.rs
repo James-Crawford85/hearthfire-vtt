@@ -1,13 +1,13 @@
-//! Hearth desktop app.
+//! Hearthfire desktop app.
 //!
 //! One window, two modes:
-//! * **Host** – runs a Hearth server in-process for one of your worlds, then
+//! * **Host** – runs a Hearthfire server in-process for one of your worlds, then
 //!   opens it as GM. Players join from their browser or their own app.
-//! * **Join** – opens someone else's Hearth server; joined games are saved so
+//! * **Join** – opens someone else's Hearthfire server; joined games are saved so
 //!   they can be rejoined later.
 //!
 //! The launcher (`ui/`) is the only page with access to the app's commands.
-//! Game pages are ordinary web pages served by a Hearth server; an injected
+//! Game pages are ordinary web pages served by a Hearthfire server; an injected
 //! script just adds a "back to launcher" button to them.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -87,7 +87,7 @@ fn home_button_script(launcher: &str) -> String {
     var b = document.createElement('button');
     b.id = 'hearth-desktop-home';
     b.textContent = '⌂';
-    b.title = 'Back to the Hearth launcher (the world keeps running)';
+    b.title = 'Back to the Hearthfire launcher (the world keeps running)';
     b.setAttribute('aria-label', b.title);
     b.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:2147483647;width:40px;height:40px;' +
       'border-radius:8px;border:1px solid #3a3e4a;background:#1f2127;color:#e8e6e1;font-size:20px;' +
@@ -151,7 +151,7 @@ fn main() {
             // Same origin the app serves `ui/` from on each platform.
             let launcher = if cfg!(windows) { "http://tauri.localhost/" } else { "tauri://localhost/" };
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title(if cfg!(debug_assertions) { "Hearth (development build)" } else { "Hearth" })
+                .title(if cfg!(debug_assertions) { "HearthfireVTT (development build)" } else { "HearthfireVTT" })
                 .inner_size(1360.0, 860.0)
                 .min_inner_size(960.0, 640.0)
                 .initialization_script(&home_button_script(launcher))
@@ -191,7 +191,7 @@ fn main() {
             commands::copy_package,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to start Hearth");
+        .expect("failed to start Hearthfire");
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {

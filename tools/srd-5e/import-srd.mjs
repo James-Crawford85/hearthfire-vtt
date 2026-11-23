@@ -1,6 +1,6 @@
 // Imports SRD 5.2.1 content (from the Markdown conversion at
 // https://github.com/downfallx/dnd-5e-srd-markdown, CC BY 4.0) into the 5e
-// reference system's collections. Re-runnable: entries added from inside Hearth
+// reference system's collections. Re-runnable: entries added from inside Hearthfire
 // (flags.core.user_added) are kept.
 //
 //   node import-srd.mjs <folder with the .md files> <system folder> [spells|monsters|items|all]
@@ -31,7 +31,7 @@ function entries(text, level, from = null, until = null) {
   return heads.map((m, i) => ({ name: m[1].trim(), body: t.slice(m.index + m[0].length, heads[i + 1]?.index ?? t.length).trim() }));
 }
 
-/** Write a collection, keeping what was added from inside Hearth. */
+/** Write a collection, keeping what was added from inside Hearthfire. */
 function writePack(file, docs) {
   const at = path.join(out, 'packs', `${file}.json`);
   let kept = [];

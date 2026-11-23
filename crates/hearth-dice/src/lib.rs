@@ -1,4 +1,4 @@
-//! Dice expressions for Hearth.
+//! Dice expressions for Hearthfire.
 //!
 //! Grammar (whitespace is allowed between terms, not inside dice notation):
 //!

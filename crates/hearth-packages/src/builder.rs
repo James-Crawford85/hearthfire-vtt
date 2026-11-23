@@ -1,6 +1,6 @@
 //! The system builder's file (`builder.json` in a system's folder): a tree of
 //! actor and item types made of groups, fields, formulas, resources, lists,
-//! actions and effects. Hearth compiles it into data templates and rules
+//! actions and effects. Hearthfire compiles it into data templates and rules
 //! (the same things a hand-written `hearth.toml` declares), and the client
 //! lays out sheets from it.
 //!

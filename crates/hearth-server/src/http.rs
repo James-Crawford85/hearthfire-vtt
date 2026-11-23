@@ -346,7 +346,7 @@ pub async fn builder_put(
     }
     let file = dir.join(hearth_packages::builder::FILE);
     tokio::fs::write(&file, text).await.map_err(|e| {
-        (StatusCode::FORBIDDEN, format!("Couldn't save to {}: {e}. Systems that came with Hearth can't be changed: in the launcher, open Game Systems and use Copy to edit, then make a world with the copy.", file.display()))
+        (StatusCode::FORBIDDEN, format!("Couldn't save to {}: {e}. Systems that came with Hearthfire can't be changed: in the launcher, open Game Systems and use Copy to edit, then make a world with the copy.", file.display()))
     })?;
     tracing::info!(system = %system, "system builder saved");
     state.reload_system().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;

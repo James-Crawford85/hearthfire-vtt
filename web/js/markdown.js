@@ -3,7 +3,7 @@
 //
 // Supported: # headings (1–4), paragraphs (single newlines become line
 // breaks), **bold**, *italic* / _italic_, `code`, [text](url), ![alt](url),
-// - / * bullet lists, 1. numbered lists, > quotes, --- rules, and two Hearth
+// - / * bullet lists, 1. numbered lists, > quotes, --- rules, and two Hearthfire
 // extras:
 //   [[Name]] or [[Name|label]]   link to a journal entry (or actor) by name
 //   [[/r 1d20 + 2]]              a button that rolls the formula

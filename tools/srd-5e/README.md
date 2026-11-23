@@ -12,7 +12,7 @@ node gen-srd.mjs <system folder>
 node import-srd.mjs <srd markdown folder> <system folder> all
 ```
 
-Run the importer after the generator: the generator writes small placeholder spells, monsters and feats that the importer replaces. Both keep entries added from inside Hearth ("Add to the system's collection", marked `flags.core.user_added`), and the importer keeps effects already set on feats with the same name.
+Run the importer after the generator: the generator writes small placeholder spells, monsters and feats that the importer replaces. Both keep entries added from inside Hearthfire ("Add to the system's collection", marked `flags.core.user_added`), and the importer keeps effects already set on feats with the same name.
 
 The SRD source is the Markdown conversion of SRD 5.2.1 at https://github.com/downfallx/dnd-5e-srd-markdown (CC BY 4.0): download its `.md` files into one folder.
 

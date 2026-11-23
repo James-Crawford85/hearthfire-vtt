@@ -44,7 +44,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists"
           else
-            gh release create "$TAG" --draft --title "Hearth $TAG" --generate-notes --verify-tag
+            gh release create "$TAG" --draft --title "HearthfireVTT $TAG" --generate-notes --verify-tag
           fi
 
   desktop:
@@ -94,7 +94,7 @@ jobs:
         with:
           projectPath: crates/hearth-desktop
           tagName: ${{ env.TAG }}
-          releaseName: Hearth ${{ env.TAG }}
+          releaseName: HearthfireVTT ${{ env.TAG }}
           releaseDraft: true
           args: ${{ matrix.args }}
           uploadUpdaterJson: true
@@ -126,9 +126,9 @@ jobs:
       - name: Package server with web client and packages
         shell: bash
         run: |
-          name="hearth-server-${TAG}-${{ matrix.target }}"
+          name="hearthfire-server-${TAG}-${{ matrix.target }}"
           mkdir -p "$name"
-          cp "target/${{ matrix.target }}/release/hearth${{ matrix.exe }}" "$name/"
+          cp "target/${{ matrix.target }}/release/hearthfire${{ matrix.exe }}" "$name/"
           cp -r web packages README.md LICENSE "$name/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "$name.zip" "$name" >/dev/null

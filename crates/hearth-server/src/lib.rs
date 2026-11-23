@@ -1,4 +1,4 @@
-//! The Hearth server as a library, so it can run standalone (`hearth` binary)
+//! The Hearthfire server as a library, so it can run standalone (`hearthfire` binary)
 //! or embedded inside the desktop app, which hosts a world in-process.
 
 pub mod backups;
@@ -129,7 +129,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         )
         .fallback_service(ServeDir::new(&cfg.web_dir))
         // The web client and packages are always sent fresh. Revalidating by
-        // date isn't safe: different Hearth versions (an installed app, a dev
+        // date isn't safe: different Hearthfire versions (an installed app, a dev
         // build, a standalone server) serve the same address and share one
         // browser cache, and an older file can carry a *newer* date.
         .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("no-store")))
@@ -139,7 +139,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     let addr: SocketAddr = format!("{}:{}", cfg.host, cfg.port).parse().context("bad host/port")?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("could not listen on {addr} (is another Hearth already running?)"))?;
+        .with_context(|| format!("could not listen on {addr} (is another Hearthfire already running?)"))?;
     let addr = listener.local_addr()?;
     tracing::info!(%addr, world = %world_name, "serving");
 

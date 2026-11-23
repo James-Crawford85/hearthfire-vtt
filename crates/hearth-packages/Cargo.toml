@@ -1,6 +1,6 @@
 [package]
 name = "hearth-packages"
-description = "System, module and theme packages plus sandboxed Rhai scripting for Hearth VTT"
+description = "System, module and theme packages plus sandboxed Rhai scripting for HearthfireVTT"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
