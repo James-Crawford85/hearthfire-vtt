@@ -3,6 +3,9 @@
 // skeleton gives the roof's planes — one per wall edge, sloping up from it — and the lines
 // where planes meet (ridges, hips over outside corners, valleys from inside corners).
 //
+// A hipped roof's corners can be cut off at 45° (`cuts`: { nw, ne, se, sw } in squares), to
+// cover a building whose diagonal walls cut its corners.
+//
 // Pure geometry, no drawing: coordinates are in grid squares.
 
 const NEAR = 1e-6;
@@ -11,6 +14,47 @@ const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
 const dot = (a, b) => a.x * b.x + a.y * b.y;
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const near = (a, b) => dist(a, b) < NEAR;
+
+/** The roof's corners. */
+export const CORNERS = ['nw', 'ne', 'se', 'sw'];
+
+/** A hipped roof's 45° corner cuts, whole squares that fit its sides; null if it has none. */
+export function cutsOf(r) {
+  if (!r?.cuts) return null;
+  const n = (k) => Math.max(0, Math.round(Number(r.cuts[k]) || 0));
+  const w = Math.round(r.w), h = Math.round(r.h);
+  const nw = Math.min(n('nw'), w, h);
+  const ne = Math.min(n('ne'), w - nw, h);
+  const se = Math.min(n('se'), w, h - ne);
+  const sw = Math.min(n('sw'), w - se, h - nw);
+  return nw || ne || se || sw ? { nw, ne, se, sw } : null;
+}
+
+/**
+ * A roof rectangle's outline with its corners cut, clockwise from the top left. `grow` moves
+ * the cut lines inwards by that much (the straight sides stay put).
+ */
+export function cutLoop(r, grow = 0) {
+  const c = cutsOf(r) ?? { nw: 0, ne: 0, se: 0, sw: 0 };
+  const k = (v) => (v ? v + grow * Math.SQRT2 : 0);
+  const { x, y, w, h } = r;
+  const pts = [
+    { x: x + k(c.nw), y }, { x: x + w - k(c.ne), y }, { x: x + w, y: y + k(c.ne) }, { x: x + w, y: y + h - k(c.se) },
+    { x: x + w - k(c.se), y: y + h }, { x: x + k(c.sw), y: y + h }, { x, y: y + h - k(c.sw) }, { x, y: y + k(c.nw) },
+  ];
+  return pts.filter((p, i) => !near(p, pts[(i + 1) % pts.length]));
+}
+
+/** Is a point under a roof rectangle, its cut corners left out (`strict`: not on its edge)? */
+function underRect(r, x, y, strict = false) {
+  const dx0 = x - r.x, dx1 = r.x + r.w - x, dy0 = y - r.y, dy1 = r.y + r.h - y;
+  const min = Math.min(dx0, dx1, dy0, dy1);
+  if (strict ? min <= 0 : min < 0) return false;
+  const c = cutsOf(r);
+  if (!c) return true;
+  const ok = (a, b, k) => !k || (strict ? a + b > k : a + b >= k);
+  return ok(dx0, dy0, c.nw) && ok(dx1, dy0, c.ne) && ok(dx1, dy1, c.se) && ok(dx0, dy1, c.sw);
+}
 
 /** Group roof rectangles into buildings: ones that overlap or share a stretch of edge. */
 export function groupRects(rects) {
@@ -53,6 +97,7 @@ function cells(rects) {
  * inward normal (-dy, dx): outer outlines run clockwise on screen, holes the other way.
  */
 export function outline(rects) {
+  if (rects.some(cutsOf)) return cutOutline(rects);
   const { xs, ys, filled } = cells(rects);
   const key = (p) => `${p.x},${p.y}`;
   const out = new Map(); // start corner → directed edges from it
@@ -98,6 +143,70 @@ export function outline(rects) {
   return loops;
 }
 
+/**
+ * The outline of rectangles with cut corners: each square split into four triangles by its
+ * diagonals (a 45° cut runs along them), the filled ones' outer sides traced into loops.
+ */
+function cutOutline(rects) {
+  const x0 = Math.floor(Math.min(...rects.map((r) => r.x))), y0 = Math.floor(Math.min(...rects.map((r) => r.y)));
+  const x1 = Math.ceil(Math.max(...rects.map((r) => r.x + r.w))), y1 = Math.ceil(Math.max(...rects.map((r) => r.y + r.h)));
+  // The quarters: top, right, bottom, left; each with its corners clockwise and, per side,
+  // the quarter across it ([di, dj, quarter]).
+  const Q = [
+    { c: [0.5, 1 / 6], pts: [[0, 0], [1, 0]], across: [[0, -1, 2], [0, 0, 1], [0, 0, 3]] },
+    { c: [5 / 6, 0.5], pts: [[1, 0], [1, 1]], across: [[1, 0, 3], [0, 0, 2], [0, 0, 0]] },
+    { c: [0.5, 5 / 6], pts: [[1, 1], [0, 1]], across: [[0, 1, 0], [0, 0, 3], [0, 0, 1]] },
+    { c: [1 / 6, 0.5], pts: [[0, 1], [0, 0]], across: [[-1, 0, 1], [0, 0, 0], [0, 0, 2]] },
+  ];
+  const memo = new Map();
+  const filled = (i, j, q) => {
+    if (i < x0 || j < y0 || i >= x1 || j >= y1) return false;
+    const key = `${i},${j},${q}`;
+    if (!memo.has(key)) memo.set(key, rects.some((r) => underRect(r, i + Q[q].c[0], j + Q[q].c[1], true)));
+    return memo.get(key);
+  };
+  const key = (p) => `${p.x},${p.y}`;
+  const out = new Map();
+  const add = (a, b) => {
+    if (!out.has(key(a))) out.set(key(a), []);
+    out.get(key(a)).push({ a, b, used: false });
+  };
+  for (let j = y0; j < y1; j++) {
+    for (let i = x0; i < x1; i++) {
+      for (let q = 0; q < 4; q++) {
+        if (!filled(i, j, q)) continue;
+        const [p0, p1] = Q[q].pts;
+        const tri = [{ x: i + p0[0], y: j + p0[1] }, { x: i + p1[0], y: j + p1[1] }, { x: i + 0.5, y: j + 0.5 }];
+        Q[q].across.forEach(([di, dj, nq], s) => { if (!filled(i + di, j + dj, nq)) add(tri[s], tri[(s + 1) % 3]); });
+      }
+    }
+  }
+  const dir = (e) => { const dx = e.b.x - e.a.x, dy = e.b.y - e.a.y, l = Math.hypot(dx, dy); return { x: dx / l, y: dy / l }; };
+  const loops = [];
+  for (const list of out.values()) {
+    for (const first of list) {
+      if (first.used) continue;
+      const pts = [];
+      let e = first;
+      while (e && !e.used) {
+        e.used = true;
+        pts.push(e.a);
+        const d = dir(e);
+        // Where corners pinch together, turn in hardest towards the roof: the loops stay apart.
+        const turn = (n) => { const nd = dir(n); return Math.atan2(d.x * nd.y - d.y * nd.x, dot(d, nd)); };
+        e = (out.get(key(e.b)) ?? []).filter((n) => !n.used).sort((a, b) => turn(b) - turn(a))[0];
+      }
+      const m = pts.length;
+      const corners = pts.filter((p, i) => {
+        const a = pts[(i - 1 + m) % m], b = pts[(i + 1) % m];
+        return Math.abs((p.x - a.x) * (b.y - p.y) - (p.y - a.y) * (b.x - p.x)) > NEAR;
+      });
+      if (corners.length >= 3) loops.push(corners);
+    }
+  }
+  return loops;
+}
+
 /** The union as rectangles shrunk by `inset` along its outside edges only (for clipping). */
 export function insetRects(rects, inset) {
   const { xs, ys, filled } = cells(rects);
@@ -115,7 +224,7 @@ export function insetRects(rects, inset) {
 
 /** Is a point (grid squares) under any of the rectangles? */
 export function insideRects(rects, x, y) {
-  return rects.some((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+  return rects.some((r) => underRect(r, x, y));
 }
 
 /**
@@ -379,12 +488,12 @@ const cache = new Map();
  * from ROUND_ROOFS) makes a lone rectangle a round roof.
  */
 export function roofShape(rects, ridge, round = null) {
-  const key = JSON.stringify([rects.map((r) => [r.x, r.y, r.w, r.h]), rects.length === 1 ? ridge ?? null : null, round]);
+  const key = JSON.stringify([rects.map((r) => [r.x, r.y, r.w, r.h, cutsOf(r)]), rects.length === 1 ? ridge ?? null : null, round]);
   if (cache.has(key)) return cache.get(key);
   let shape;
   if (round && rects.length === 1) {
     shape = roundRoof(rects[0], round);
-  } else if (rects.length === 1 && ridge && ridge !== (rects[0].w >= rects[0].h ? 'h' : 'v')) {
+  } else if (rects.length === 1 && ridge && !cutsOf(rects[0]) && ridge !== (rects[0].w >= rects[0].h ? 'h' : 'v')) {
     shape = rectRoof(rects[0], ridge);
   } else {
     const loops = outline(rects);

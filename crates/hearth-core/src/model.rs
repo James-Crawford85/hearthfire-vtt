@@ -272,9 +272,16 @@ pub struct Sketch {
     #[serde(default)]
     pub floor: BTreeMap<String, String>,
     /// Grid edges the GM set, `"h:col,row"` (a square's top) or `"v:col,row"` (its left) →
-    /// `wall`, `open` (no wall), `door`, `secret_door` or `window`.
+    /// `wall`, `open` (no wall), `door`, `secret_door`, `window` or `railing`. `"d:col,row"`
+    /// (top left to bottom right) and `"u:col,row"` (bottom left to top right) are the square's
+    /// diagonals: walls at 45°, which cut the square into two triangles of floor.
     #[serde(default)]
     pub edges: BTreeMap<String, String>,
+    /// The two triangles of a square cut by a diagonal, as painted one at a time:
+    /// `"col,row"` → triangle (`ne`, `sw`, `nw`, `se`: the corner its right angle is in) →
+    /// `room:<material>`, `floor:<material>` or `none`. A triangle not listed follows the square.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub halves: BTreeMap<String, BTreeMap<String, String>>,
     /// Round rooms and floors.
     #[serde(default)]
     pub shapes: BTreeMap<Id, SketchShape>,
@@ -288,6 +295,9 @@ pub struct Sketch {
     /// Roofs over buildings, seen from outside.
     #[serde(default)]
     pub roofs: BTreeMap<Id, SketchRoof>,
+    /// Buildings traced from the map: outlines at any angle, with their own floor, walls and roof.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub buildings: BTreeMap<Id, SketchBuilding>,
     /// Wall styles for single grid edges, edge key → style (overriding `wall_style`).
     #[serde(default)]
     pub styles: BTreeMap<String, String>,
@@ -297,6 +307,12 @@ pub struct Sketch {
     /// What fills the scene around the floor (a material), or none to show the map underneath.
     #[serde(default)]
     pub outside: Option<String>,
+    /// Ground textures painted freely over `outside`, under the floors (the ground level only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<Terrain>,
+    /// Water painted freely over the ground (the ground level only): oceans, lakes and rivers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water: Option<Water>,
     /// Draw walls along the rooms' edges.
     #[serde(default = "default_true")]
     pub walls: bool,
@@ -311,17 +327,124 @@ impl Default for Sketch {
             cells: BTreeMap::new(),
             floor: BTreeMap::new(),
             edges: BTreeMap::new(),
+            halves: BTreeMap::new(),
             shapes: BTreeMap::new(),
             lines: BTreeMap::new(),
             props: BTreeMap::new(),
             roofs: BTreeMap::new(),
+            buildings: BTreeMap::new(),
             styles: BTreeMap::new(),
             wall_style: None,
             outside: None,
+            terrain: None,
+            water: None,
             walls: true,
             size: 0,
         }
     }
+}
+
+/// Ground painted freely onto a sketch: up to eight textures blended over `outside`. The map is
+/// cut into chunks of 16 × 16 squares; each chunk holds, for each texture it has, how much of it
+/// there is at each of 128 × 128 points (8 a square), one byte each, deflated and base64 encoded
+/// (`z:` …; `r:` … when not deflated). The client paints and draws it; the server only keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Terrain {
+    /// The textures, by slot (`"1"` … `"8"`).
+    #[serde(default)]
+    pub slots: BTreeMap<String, TerrainSlot>,
+    /// `"col,row"` (in chunks) → slot → its amounts.
+    #[serde(default)]
+    pub chunks: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// One painted ground texture: a material (as for floors), how big its tile is drawn (1 = as on
+/// floors) and how ragged its edges are (0 = a soft blend, 1 = rough and sharp).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerrainSlot {
+    pub material: String,
+    #[serde(default = "default_one")]
+    pub scale: f64,
+    #[serde(default)]
+    pub edge: f64,
+}
+
+/// Water painted freely onto a sketch, in the same chunks as `Terrain`: each chunk holds how much
+/// of each body of water there is at each point (a point is one body's or none). `flow` keeps,
+/// for each chunk, which way the rivers in it run: 32 × 32 points (2 a square), two signed bytes
+/// each (x, y), encoded the same way. The client paints and draws it; the server only keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Water {
+    /// The bodies of water, by id (`"1"` … `"8"`).
+    #[serde(default)]
+    pub bodies: BTreeMap<String, WaterBody>,
+    /// `"col,row"` (in chunks) → body → its amounts.
+    #[serde(default)]
+    pub chunks: BTreeMap<String, BTreeMap<String, String>>,
+    /// `"col,row"` → the way rivers run there.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub flow: BTreeMap<String, String>,
+    /// Waves and currents move (for players who have animated maps on).
+    #[serde(default = "default_true")]
+    pub animate: bool,
+}
+
+/// A body of water: `ocean` (waves and foam along the shore), `lake` (still) or `river`
+/// (running the way it was painted). `water` is its surface's material, `shore` what edges it
+/// (`shore_width` squares out), `underlay` what shows through it (its bed); `depth` is how
+/// far out (squares) it gets fully deep and dark, `clarity` how much of the underlay shows (0 – 1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WaterBody {
+    #[serde(default = "lake")]
+    pub kind: String,
+    #[serde(default = "water_material")]
+    pub water: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shore: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlay: Option<String>,
+    #[serde(default = "default_shore_width")]
+    pub shore_width: f64,
+    #[serde(default = "default_depth")]
+    pub depth: f64,
+    #[serde(default = "default_half")]
+    pub clarity: f64,
+}
+
+fn lake() -> String {
+    "lake".into()
+}
+fn water_material() -> String {
+    "water".into()
+}
+fn default_shore_width() -> f64 {
+    0.75
+}
+fn default_depth() -> f64 {
+    3.0
+}
+fn default_half() -> f64 {
+    0.5
+}
+
+fn default_one() -> f64 {
+    1.0
+}
+
+/// A building traced from the map: its outline's corners (in squares, any angle), its floor (a
+/// material; none shows the map), its roof (none: no roof), and walls round it. Its walls aren't
+/// stored as walls: they are worked out from the outline wherever walls are needed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SketchBuilding {
+    pub poly: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roof: Option<String>,
+    #[serde(default = "default_true")]
+    pub walled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_style: Option<String>,
 }
 
 /// A round room (walled) or round floor, centred at `x, y` with radius `r`, in squares.
@@ -400,7 +523,8 @@ pub struct SketchProp {
 
 /// A roof: a rectangle of `w` × `h` squares from `x, y`, its ridge along the longer side
 /// unless `ridge` says (`h` or `v`). With `shape` (`cone`, `facets` or `dome`) it is a round
-/// roof filling that rectangle instead.
+/// roof filling that rectangle instead. `cuts` (`nw`, `ne`, `se`, `sw`) cuts its corners off
+/// at 45° by so many squares, to follow diagonal walls.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SketchRoof {
     pub x: f64,
@@ -412,6 +536,8 @@ pub struct SketchRoof {
     pub ridge: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cuts: BTreeMap<String, f64>,
 }
 
 /// Walls and lights drawn from a scene's sketch have ids with this prefix.
@@ -767,6 +893,23 @@ impl Scene {
     /// Would a move on `level` cross a wall there?
     pub fn move_blocked_on(&self, level: &str, from: [f64; 2], to: [f64; 2]) -> bool {
         self.walls.values().filter(|w| w.level == level && w.blocks_movement()).any(|w| crate::geometry::segments_cross(from, to, w.a, w.b))
+            || self.building_blocks(level, from, to)
+    }
+
+    /// Does a move on `level` cross a traced building's walls?
+    fn building_blocks(&self, level: &str, from: [f64; 2], to: [f64; 2]) -> bool {
+        let sketch = if level.is_empty() { self.sketch.as_ref() } else { self.level_sketches.get(level) };
+        let Some(sk) = sketch else { return false };
+        let g = self.grid.size as f64;
+        let (x0, x1) = (from[0].min(to[0]) / g, from[0].max(to[0]) / g);
+        let (y0, y1) = (from[1].min(to[1]) / g, from[1].max(to[1]) / g);
+        sk.buildings.values().filter(|b| b.walled && b.poly.len() >= 3).any(|b| {
+            let out = b.poly.iter().all(|p| p[0] < x0) || b.poly.iter().all(|p| p[0] > x1) || b.poly.iter().all(|p| p[1] < y0) || b.poly.iter().all(|p| p[1] > y1);
+            !out && (0..b.poly.len()).any(|i| {
+                let (a, c) = (b.poly[i], b.poly[(i + 1) % b.poly.len()]);
+                crate::geometry::segments_cross(from, to, [a[0] * g, a[1] * g], [c[0] * g, c[1] * g])
+            })
+        })
     }
 
     /// Is `level` one of this scene's levels (empty: the ground)?

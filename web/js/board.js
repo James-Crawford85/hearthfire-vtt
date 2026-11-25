@@ -32,8 +32,8 @@ import { lightDialog, animState, drawAnimOverlay, animColor, isAnimated, seedOf,
 import { soundDialog } from './audio.js';
 import { drawDrawing, drawSelection, hitDrawing, simplify } from './drawings.js';
 import { isVideo, sizeOf, animatedMaps } from './media.js';
-import { drawSketch, sketchChanged, drawOverhang, onOverhang, roofGroupsOf, drawRoofGroup } from './sketch.js';
-import { insideRoof, insetRects } from './roof-skeleton.js';
+import { drawSketch, sketchChanged, drawOverhang, onOverhang, roofGroupsOf, drawRoofGroup, buildingWalls, buildingAt, drawBuildingRoofs } from './sketch.js';
+import { insideRoof, insetRects, cutsOf, cutLoop } from './roof-skeleton.js';
 import { levelsOf, levelOf, levelNext, onLevel, levelName } from './levels.js';
 
 export class Board {
@@ -325,6 +325,7 @@ export class Board {
     // The floor above that overhangs this one (walkways), under this level's tokens, which stay
     // in view; it takes the level's lighting like the rest.
     this.drawAbove(s, levelNext(s, cur, 1), limited);
+    this.drawBuildingRoofs(s, levels, curL);
     this.drawLighting(s);
     const seeing = this.seeing;
     for (const t of this.tokens()) {
@@ -391,6 +392,26 @@ export class Board {
    * Roofs over buildings, above everything: seen from outside, gone for a player whose token
    * is under one (they're inside). The GM sees them faintly, or not at all with roofs hidden.
    */
+  drawBuildingRoofs(s, levels, curL) {
+    if (curL.elevation < 0) return;
+    const gm = this.gmView;
+    if (gm && !this.showRoofs) return;
+    const g = this.grid;
+    const mine = gm ? [] : this.seeing ?? Object.values(s.tokens).filter((t) => t.actor_id && ownsActor(t.actor_id));
+    for (const l of levels) {
+      if (l.elevation < 0) continue;
+      // A building a player's token is inside has no roof for them.
+      const hidden = new Set();
+      for (const t of mine) {
+        if ((levelOf(s, t.level)?.elevation ?? 0) > l.elevation) continue;
+        const c = this.center(t);
+        const id = buildingAt(s, l.id, c.x / g, c.y / g, true);
+        if (id) hidden.add(id);
+      }
+      drawBuildingRoofs(this.ctx, s, l.id, this, { hidden, alpha: gm ? 0.4 : 1 });
+    }
+  }
+
   drawRoofs(s, levels, curL) {
     if (curL.elevation < 0) return;
     const gm = this.gmView;
@@ -440,23 +461,40 @@ export class Board {
     // from outside stay whole).
     ctx.save();
     ctx.globalCompositeOperation = 'destination-out';
-    ctx.beginPath();
     const inset = g * 0.12;
-    for (const b of shown) {
-      if (b.round) {
-        const r = b.rects[0];
-        ctx.moveTo((r.x + r.w) * g - inset, (r.y + r.h / 2) * g);
-        ctx.ellipse((r.x + r.w / 2) * g, (r.y + r.h / 2) * g, Math.max(0, (r.w / 2) * g - inset), Math.max(0, (r.h / 2) * g - inset), 0, 0, Math.PI * 2);
-      } else for (const r of insetRects(b.rects, inset / g)) ctx.rect(r.x * g, r.y * g, r.w * g, r.h * g);
-    }
-    ctx.clip();
-    for (const src of this.roofSight) {
+    const sight = () => {
+      for (const src of this.roofSight) {
+        ctx.save();
+        if (Number.isFinite(src.radius)) { ctx.beginPath(); ctx.arc(src.origin.x, src.origin.y, src.radius, 0, Math.PI * 2); ctx.clip(); }
+        ctx.beginPath();
+        src.poly.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    };
+    // Roofs with cut corners are cut out one by one: in from their straight sides, then in
+    // from their 45° ones.
+    const cornered = shown.filter((b) => !b.round && b.rects.some(cutsOf));
+    const plain = shown.filter((b) => !cornered.includes(b));
+    for (const group of [plain, ...cornered.map((b) => [b])]) {
+      if (!group.length) continue;
       ctx.save();
-      if (Number.isFinite(src.radius)) { ctx.beginPath(); ctx.arc(src.origin.x, src.origin.y, src.radius, 0, Math.PI * 2); ctx.clip(); }
       ctx.beginPath();
-      src.poly.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-      ctx.closePath();
-      ctx.fill();
+      for (const b of group) {
+        if (b.round) {
+          const r = b.rects[0];
+          ctx.moveTo((r.x + r.w) * g - inset, (r.y + r.h / 2) * g);
+          ctx.ellipse((r.x + r.w / 2) * g, (r.y + r.h / 2) * g, Math.max(0, (r.w / 2) * g - inset), Math.max(0, (r.h / 2) * g - inset), 0, 0, Math.PI * 2);
+        } else for (const r of insetRects(b.rects, inset / g)) ctx.rect(r.x * g, r.y * g, r.w * g, r.h * g);
+      }
+      ctx.clip();
+      if (group[0] && cornered.includes(group[0])) {
+        ctx.beginPath();
+        for (const r of group[0].rects) cutLoop(r, inset / g).forEach((p, i) => (i ? ctx.lineTo(p.x * g, p.y * g) : ctx.moveTo(p.x * g, p.y * g)));
+        ctx.clip();
+      }
+      sight();
       ctx.restore();
     }
     ctx.restore();
@@ -488,6 +526,7 @@ export class Board {
       const { sight } = wallRules(w);
       if (sight !== 'pass') out.push({ a: { x: w.a[0], y: w.a[1] }, b: { x: w.b[0], y: w.b[1] }, limited: sight === 'limited' });
     }
+    if (this.scene) out.push(...buildingWalls(this.scene, this._level ?? ''));
     return out;
   }
 
@@ -495,7 +534,8 @@ export class Board {
   moveSegments() {
     return Object.values(this.scene?.walls ?? {})
       .filter((w) => this.here(w) && wallRules(w).move)
-      .map((w) => ({ a: { x: w.a[0], y: w.a[1] }, b: { x: w.b[0], y: w.b[1] } }));
+      .map((w) => ({ a: { x: w.a[0], y: w.a[1] }, b: { x: w.b[0], y: w.b[1] } }))
+      .concat(this.scene ? buildingWalls(this.scene, this._level ?? '') : []);
   }
 
   center(t) {
@@ -508,7 +548,9 @@ export class Board {
     const s = this.scene;
     this.visionDirty = false;
     const segs = this.sightSegments();
-    const poly = (origin) => visibilityPolygon(origin, segs, s.width, s.height);
+    // `range`: how far it matters (a light's reach); used where there are very many walls.
+    const poly = (origin, range = Infinity) => visibilityPolygon(origin, segs, s.width, s.height, range);
+    const reach = (l) => this.toPx(Math.max(l.dim || 0, l.bright || 0)) + 2;
     // Light: placed lights that are on, and tokens carrying light.
     this.lightSources = [];
     // A light being edited shows as it is set in its window, before it's saved.
@@ -517,13 +559,13 @@ export class Board {
       if (draft?.light === l.id) l = { ...l, ...draft.look, ...('on' in draft.look ? { off: !draft.look.on } : {}) };
       if (l.off || !this.here(l)) continue;
       const origin = { x: l.x, y: l.y };
-      this.lightSources.push(this.lightSource(origin, poly(origin), l, l.id));
+      this.lightSources.push(this.lightSource(origin, poly(origin, reach(l)), l, l.id));
     }
     for (const t of this.tokens()) {
       const light = draft?.token === t.id ? draft.look : t.light;
       if (!light || !(light.dim > 0 || light.bright > 0)) continue;
       const origin = this.center(t);
-      this.lightSources.push(this.lightSource(origin, poly(origin), light, t.id));
+      this.lightSources.push(this.lightSource(origin, poly(origin, reach(light)), light, t.id));
     }
     // Line of sight from this player's tokens (or those the GM sees as). With vision off it
     // limits nothing but what they see in under roofs (roofSight).

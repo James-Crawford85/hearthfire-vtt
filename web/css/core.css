@@ -150,6 +150,8 @@ h1, h2, h3, h4 { font-family: var(--font-display); margin: .6em 0 .3em; }
 .sketch-bar button { min-width: 28px; padding: 3px 8px; }
 .sketch-bar button.danger { color: var(--danger); }
 .sketch-bar select { padding: 3px 6px; }
+.sketch-bar .opt-slider { display: inline-flex; align-items: center; gap: 4px; }
+.sketch-bar .opt-slider input[type=range] { width: 70px; }
 .sketch-bar label.check { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
 .prop-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .prop-pick { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 2px; font-size: 11px; line-height: 1.2;
@@ -1217,3 +1219,18 @@ body.glass.glass-light .bp-sheet :is(.title-input, .bp-group-title, .bp-tabs but
 .jb-pic-opts label { display: flex; flex-direction: column; gap: 4px; }
 .jb-plate-lines { display: flex; flex-direction: column; gap: 8px; }
 .jb-maker-form label.check { flex-direction: row; align-items: center; gap: 6px; }
+
+/* Importing textures from a Dungeondraft pack */
+.dd-import { display: flex; flex-direction: column; gap: 10px; }
+.dd-import p { margin: 0; }
+.dd-group { display: flex; flex-direction: column; gap: 6px; }
+.dd-head { display: flex; align-items: center; gap: 6px; }
+.dd-head strong { margin-right: auto; }
+.dd-head button { padding: 2px 8px; }
+.dd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.dd-tile { display: flex; flex-direction: column; gap: 4px; font-size: 12px; cursor: pointer; margin: 0; }
+.dd-thumb { display: block; aspect-ratio: 1; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-3) center / cover no-repeat; }
+.dd-thumb.broken { background: repeating-linear-gradient(45deg, var(--panel-3) 0 6px, var(--panel) 6px 12px); }
+.dd-name { display: flex; gap: 4px; align-items: flex-start; word-break: break-word; }
+.dd-foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 8px 0 2px; background: var(--panel); border-top: 1px solid var(--border); }
+.dd-foot .primary { margin-left: auto; }

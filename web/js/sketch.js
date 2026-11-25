@@ -5,16 +5,26 @@
 //   cells   { "col,row": material }   room squares: walls along the rooms' edges
 //   floor   { "col,row": material }   floor without walls (porches, paths, water)
 //   edges   { "h:col,row" | "v:col,row": "wall" | "open" | "door" | "secret_door" | "window" }
-//           a square's top (h) or left (v) edge, as the GM set it; "open" takes a room's wall away
+//           a square's top (h) or left (v) edge, as the GM set it; "open" takes a room's wall away.
+//           "d:col,row" (\) and "u:col,row" (/) are a square's diagonals (walls at 45°): a square
+//           crossed by one is cut into two triangles, each floored or not (splitSquares)
 //   shapes  { id: { kind: "circle", x, y, r, material, walled, openings } }   round rooms and floors;
 //           openings { id: { at (degrees round, 0 = east, clockwise), width (squares), kind } }
 //           are doors and windows set in a round room's curved wall
-//   roofs   { id: { x, y, w, h, material, ridge, shape } }   roofs; touching ones join up, and
-//           `shape` ("cone", "facets", "dome") makes one round
+//   roofs   { id: { x, y, w, h, material, ridge, shape, cuts } }   roofs; touching ones join up,
+//           `shape` ("cone", "facets", "dome") makes one round, and `cuts` { nw, ne, se, sw }
+//           cuts a hipped one's corners off at 45° by so many squares (to follow diagonal walls)
 //   lines   { id: { a: [x, y], b: [x, y], kind } }                walls off the grid lines
+//   buildings { id: { poly: [[x, y], …], material, roof, walled, wall_style } }   buildings traced
+//           from the map (sketch-trace): outlines at any angle; no material shows the map, no roof
+//           has none. Their walls aren't sent as walls: buildingWalls works them out where needed
+//           (sight, movement, sound), as the server does for movement
 //   props   { id: { kind, x, y } }                                  light sources (torch, …)
 //   outside material | null,  walls: bool (rooms get walls),  size: grid px the walls are for
-// A material is a built-in texture id (sketch-textures.js) or an uploaded image's URL.
+//   terrain { slots, chunks }   ground textures painted freely over outside (terrain.js)
+//   water   { bodies, chunks, flow, animate }   oceans, lakes and rivers over that (water.js)
+// A material is a built-in texture id (sketch-textures.js) or an uploaded image's URL; a URL
+// ending "#px=N" is drawn at N pixels a square (textures imported from Dungeondraft packs).
 //
 // The walls and lights are ordinary walls and lights with ids starting `sk-`, worked out here
 // (sketchWalls, sketchLights) and sent with each change; the server only stores them:
@@ -23,24 +33,29 @@
 //   (a door or window in a round wall has o:<shape>:<opening> for its edge)
 
 import { texture, TILE_SQUARES, TILE_SIZE } from './sketch-textures.js';
-import { isGM } from './store.js';
+import { isGM, mergePatch } from './store.js';
 import { hooks } from './hooks.js';
 import { macroOf, macroPattern } from './texture-recipes.js';
 import { propDef, isLight, propOutline, drawPropAt, propLightColor } from './sketch-props.js';
 import { skId, onLevel, sketchOf } from './levels.js';
-import { groupRects, roofShape, ROUND_ROOFS } from './roof-skeleton.js';
+import { groupRects, roofShape, ROUND_ROOFS, straightSkeleton, roofFaces } from './roof-skeleton.js';
+import { drawTerrain, terrainTexturesChanged } from './terrain.js';
+import { drawWater, waterTexturesChanged } from './water.js';
+import { animatedMaps } from './media.js';
+import { pxOfMaterial } from './dd-pack.js';
 
 /** "col,row" → [col, row]. */
 export const cellOf = (k) => k.split(',').map(Number);
 export const cellKey = (c, r) => `${c},${r}`;
 
-const MAPS = ['cells', 'floor', 'edges', 'shapes', 'lines', 'props', 'styles', 'roofs'];
+const MAPS = ['cells', 'floor', 'edges', 'halves', 'shapes', 'lines', 'props', 'styles', 'roofs', 'buildings'];
 
 /** A sketch with a change applied (null erases an entry; a whole map set to null empties it). */
 export function withPatch(sk, patch) {
   const out = { outside: null, walls: true, size: 0, ...(sk ?? {}) };
   for (const k of MAPS) out[k] = { ...(sk?.[k] ?? {}) };
   for (const [k, v] of Object.entries(patch ?? {})) {
+    if (k === 'terrain' || k === 'water') { out[k] = v === null ? null : mergePatch(structuredClone(out[k] ?? {}), v); continue; }
     if (!MAPS.includes(k)) { out[k] = v; continue; }
     if (v === null) { out[k] = {}; continue; }
     for (const [id, x] of Object.entries(v)) { if (x == null) delete out[k][id]; else out[k][id] = x; }
@@ -50,11 +65,42 @@ export function withPatch(sk, patch) {
 
 // ------------------------------------------------------------------ edges
 
-/** An edge key's segment in scene pixels: "h:c,r" is square (c, r)'s top, "v:c,r" its left. */
+/**
+ * An edge key's segment in scene pixels: "h:c,r" is square (c, r)'s top, "v:c,r" its left;
+ * the diagonals across it are "d:c,r" (top left to bottom right, \) and "u:c,r" (bottom left
+ * to top right, /).
+ */
 export function edgeSegment(edge, g) {
   const [dir, rest] = edge.split(':');
   const [c, r] = cellOf(rest);
+  if (dir === 'd') return { a: [c * g, r * g], b: [(c + 1) * g, (r + 1) * g] };
+  if (dir === 'u') return { a: [c * g, (r + 1) * g], b: [(c + 1) * g, r * g] };
   return dir === 'h' ? { a: [c * g, r * g], b: [(c + 1) * g, r * g] } : { a: [c * g, r * g], b: [c * g, (r + 1) * g] };
+}
+
+/** Is an edge key one of a square's diagonals? */
+export const isDiagonal = (edge) => edge[0] === 'd' || edge[0] === 'u';
+
+/**
+ * The diagonal edge set in the sketch near a point (scene px), within `tol` squares of it,
+ * if there is one: `want(value)` chooses which (any set diagonal by default).
+ */
+export function diagonalNear(sk, w, g, tol = 0.25, want = (v) => !!v && v !== 'open') {
+  const c0 = Math.floor(w.x / g), r0 = Math.floor(w.y / g);
+  let best = null, bestD = tol * g;
+  for (let c = c0 - 1; c <= c0 + 1; c++) {
+    for (let r = r0 - 1; r <= r0 + 1; r++) {
+      for (const e of [`d:${c},${r}`, `u:${c},${r}`]) {
+        if (!want(sk.edges?.[e])) continue;
+        const { a, b } = edgeSegment(e, g);
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        const t = Math.max(0, Math.min(1, ((w.x - a[0]) * dx + (w.y - a[1]) * dy) / (dx * dx + dy * dy)));
+        const d = Math.hypot(w.x - a[0] - t * dx, w.y - a[1] - t * dy);
+        if (d < bestD) { best = e; bestD = d; }
+      }
+    }
+  }
+  return best;
 }
 
 /** The grid edge nearest a point (scene px), if it's within `tol` squares of it. */
@@ -70,20 +116,28 @@ export function edgesAlong(a, b) {
   const out = [];
   if (a[1] === b[1]) for (let c = Math.min(a[0], b[0]); c < Math.max(a[0], b[0]); c++) out.push(`h:${c},${a[1]}`);
   else if (a[0] === b[0]) for (let r = Math.min(a[1], b[1]); r < Math.max(a[1], b[1]); r++) out.push(`v:${a[0]},${r}`);
-  else return null;
+  else if (Math.abs(b[0] - a[0]) === Math.abs(b[1] - a[1])) {
+    // At 45°: the diagonals of the squares it crosses.
+    const [p, q] = a[0] < b[0] ? [a, b] : [b, a];
+    for (let i = 0; i < q[0] - p[0]; i++) out.push(q[1] > p[1] ? `d:${p[0] + i},${p[1] + i}` : `u:${p[0] + i},${p[1] - 1 - i}`);
+  } else return null;
   return out;
 }
 
-/** Collinear unit edges merged into runs: [[dir, line, from, to], …]. */
+/**
+ * Collinear unit edges merged into runs: [[dir, line, from, to], …]. A run along a diagonal
+ * has `line` c − r (d) or c + r (u), and goes from column `from` to `to`.
+ */
 function runs(edges) {
   const lines = new Map();
   for (const e of edges) {
     const [dir, rest] = e.split(':');
     const [c, r] = cellOf(rest);
-    const key = dir === 'h' ? `h${r}` : `v${c}`;
+    const line = dir === 'h' ? r : dir === 'v' ? c : dir === 'd' ? c - r : c + r;
+    const key = `${dir}${line}`;
     let l = lines.get(key);
-    if (!l) lines.set(key, (l = { dir, line: dir === 'h' ? r : c, at: [] }));
-    l.at.push(dir === 'h' ? c : r);
+    if (!l) lines.set(key, (l = { dir, line, at: [] }));
+    l.at.push(dir === 'v' ? r : c);
   }
   const out = [];
   for (const { dir, line, at } of lines.values()) {
@@ -99,8 +153,201 @@ function runs(edges) {
   return out;
 }
 
-const runSeg = ([dir, line, a, b], g) => (dir === 'h' ? { a: [a * g, line * g], b: [b * g, line * g] } : { a: [line * g, a * g], b: [line * g, b * g] });
+const runSeg = ([dir, line, a, b], g) => {
+  if (dir === 'h') return { a: [a * g, line * g], b: [b * g, line * g] };
+  if (dir === 'v') return { a: [line * g, a * g], b: [line * g, b * g] };
+  if (dir === 'd') return { a: [a * g, (a - line) * g], b: [b * g, (b - line) * g] };
+  return { a: [a * g, (line - a + 1) * g], b: [b * g, (line - b + 1) * g] };
+};
 const SIDES = (c, r) => [[`h:${c},${r}`, cellKey(c, r - 1)], [`h:${c},${r + 1}`, cellKey(c, r + 1)], [`v:${c},${r}`, cellKey(c - 1, r)], [`v:${c + 1},${r}`, cellKey(c + 1, r)]];
+
+// ------------------------------------------------------------------ squares cut in half
+
+// A square crossed by a diagonal set in `edges` is two triangles, each named by the corner its
+// right angle is in, and each with two sides of the square (its legs).
+const SIDE_OF = { t: [0, -1, 'b'], b: [0, 1, 't'], l: [-1, 0, 'r'], r: [1, 0, 'l'] }; // side → [dc, dr, the neighbour's side]
+export const TRIS = { d: { ne: ['t', 'r'], sw: ['l', 'b'] }, u: { nw: ['t', 'l'], se: ['r', 'b'] } };
+const sideEdge = (c, r, s) => (s === 't' ? `h:${c},${r}` : s === 'b' ? `h:${c},${r + 1}` : s === 'l' ? `v:${c},${r}` : `v:${c + 1},${r}`);
+/** A triangle's corners in squares (clockwise on the map, like a rectangle, so paths add up). */
+const TRI_PTS = { ne: [[0, 0], [1, 0], [1, 1]], sw: [[0, 0], [1, 1], [0, 1]], nw: [[0, 0], [1, 0], [0, 1]], se: [[1, 0], [1, 1], [0, 1]] };
+
+/** The diagonal set across a square, 'd' or 'u', if any (railings, doors and windows too). */
+export function cutOf(edges, c, r) {
+  for (const d of ['d', 'u']) { const v = edges?.[`${d}:${c},${r}`]; if (v && v !== 'open') return d; }
+  return null;
+}
+
+/** A painted triangle, "room:<material>" | "floor:<material>" | "none", as { room, material } or null. */
+export function parseHalf(v) {
+  if (!v || v === 'none') return null;
+  const i = v.indexOf(':');
+  return { room: v.slice(0, i) === 'room', material: v.slice(i + 1) };
+}
+export const halfValue = (x) => (x ? `${x.room ? 'room' : 'floor'}:${x.material}` : 'none');
+
+/** Which triangle of a cut square a point (squares) is in. */
+const triOf = (cut, fx, fy) => (cut === 'd' ? (fx > fy ? 'ne' : 'sw') : (fx + fy < 1 ? 'nw' : 'se'));
+
+/**
+ * The piece of floor under a point (scene px): "c,r" for a whole square, "c,r|t" for a
+ * triangle of a square cut by a diagonal.
+ */
+export function pieceAt(sk, w, g) {
+  const x = w.x / g, y = w.y / g, c = Math.floor(x), r = Math.floor(y);
+  const cut = cutOf(sk.edges, c, r);
+  return cut ? `${cellKey(c, r)}|${triOf(cut, x - c, y - r)}` : cellKey(c, r);
+}
+
+/** A piece's outline (scene px): a square's four corners, a triangle's three. */
+export function pieceOutline(piece, g) {
+  const [k, t] = piece.split('|');
+  const [c, r] = cellOf(k);
+  return (t ? TRI_PTS[t] : [[0, 0], [1, 0], [1, 1], [0, 1]]).map(([px, py]) => [(c + px) * g, (r + py) * g]);
+}
+
+/**
+ * The pieces of a rectangle of squares (keys) a room or floor dragged over it fills: all of
+ * them, unless diagonals cut it up; then the biggest part they leave (the room inside diagonal
+ * walls, not the corners beyond them). Squares cut by a diagonal come as their triangles.
+ */
+export function fillPieces(sk, keys) {
+  const edges = sk.edges ?? {}, inRect = new Set(keys);
+  const partsOf = (k) => { const [c, r] = cellOf(k), cut = cutOf(edges, c, r); return cut ? Object.keys(TRIS[cut]).map((t) => [t, TRIS[cut][t]]) : [['', ['t', 'b', 'l', 'r']]]; };
+  if (!keys.some((k) => partsOf(k)[0][0])) return keys;
+  const id = (k, t) => (t ? `${k}|${t}` : k);
+  const parent = new Map();
+  const find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  for (const k of keys) for (const [t] of partsOf(k)) parent.set(id(k, t), id(k, t));
+  for (const k of keys) {
+    const [c, r] = cellOf(k);
+    for (const [t, legs] of partsOf(k)) {
+      for (const s of legs) {
+        const [dc, dr, back] = SIDE_OF[s], n = cellKey(c + dc, r + dr);
+        if (!inRect.has(n)) continue;
+        const q = partsOf(n).find(([, l]) => l.includes(back));
+        if (q) parent.set(find(id(k, t)), find(id(n, q[0])));
+      }
+    }
+  }
+  const area = new Map();
+  for (const x of parent.keys()) { const root = find(x); area.set(root, (area.get(root) ?? 0) + (x.includes('|') ? 0.5 : 1)); }
+  const best = [...area].sort((a, b) => b[1] - a[1])[0][0];
+  return [...parent.keys()].filter((x) => find(x) === best);
+}
+
+/**
+ * How the painted squares crossed by diagonals are cut: Map("c,r" → { cut: 'd'|'u',
+ * tris: { name: { room, material } | null } }). A triangle is kept while its legs both meet
+ * floor of its kind (rooms meet rooms; floor meets any floor), so a diagonal across a room's
+ * corner leaves the corner outside; one dividing a room keeps both halves; and a square cut
+ * off on both sides stays whole. A room's triangle cut off where floor is beyond takes that
+ * floor, so a yard or a porch runs up to a diagonal wall.
+ */
+export function splitSquares(sk) {
+  const cells = sk.cells ?? {}, floor = sk.floor ?? {}, edges = sk.edges ?? {}, halves = sk.halves ?? {};
+  const out = new Map();
+  for (const k of [...Object.keys(cells), ...Object.keys(floor)]) {
+    if (out.has(k)) continue;
+    const [c, r] = cellOf(k);
+    const cut = cutOf(edges, c, r);
+    if (!cut) continue;
+    const room = k in cells, material = cells[k] ?? floor[k];
+    // Triangles painted one at a time are as painted; the others follow the square.
+    const fixed = new Set(Object.keys(TRIS[cut]).filter((t) => halves[k]?.[t] != null));
+    out.set(k, { cut, room, fixed, tris: Object.fromEntries(Object.keys(TRIS[cut]).map((t) => [t, fixed.has(t) ? parseHalf(halves[k][t]) : { room, material }])) });
+  }
+  // Does square k have a part of this kind (rooms only, or any floor) along side s?
+  const covers = (k, s, roomOnly) => {
+    if (!(k in cells) && (roomOnly || !(k in floor))) return false;
+    const sp = out.get(k);
+    if (!sp) return true;
+    return Object.entries(sp.tris).some(([t, x]) => x && (!roomOnly || x.room) && TRIS[sp.cut][t].includes(s));
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [k, sp] of out) {
+      const [c, r] = cellOf(k);
+      for (const [t, x] of Object.entries(sp.tris)) {
+        if (!x || sp.fixed.has(t)) continue;
+        const open =TRIS[sp.cut][t].some((s) => { const [dc, dr, back] = SIDE_OF[s]; return !covers(cellKey(c + dc, r + dr), back, x.room); });
+        if (open) { sp.tris[t] = null; changed = true; }
+      }
+    }
+  }
+  for (const [k, sp] of out) {
+    const [c, r] = cellOf(k);
+    const names = Object.keys(sp.tris);
+    // Cut off both ways: whole after all.
+    if (!sp.fixed.size && names.every((t) => !sp.tris[t])) { for (const t of names) sp.tris[t] = { room: sp.room, material: cells[k] ?? floor[k] }; continue; }
+    // A room's triangle left outside takes the floor beyond it, if there is some.
+    for (const t of names) {
+      if (sp.tris[t] || !sp.room || sp.fixed.has(t)) continue;
+      for (const s of TRIS[sp.cut][t]) {
+        const [dc, dr] = SIDE_OF[s], n = cellKey(c + dc, r + dr);
+        if (n in floor && !out.has(n)) { sp.tris[t] = { room: false, material: floor[n] }; break; }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * A diagonal wall just drawn (`along`, its diagonal edges, already in `sk`) across a room:
+ * if it cuts the room in two, the room squares on its smaller side, to be taken away, so the
+ * wall cuts the corner off. Nothing if it doesn't cut the room in two, or the sides are equal.
+ */
+export function cornerCut(sk, along) {
+  const W = sk.cells ?? {}, edges = sk.edges ?? {};
+  const partsOf = (k) => { const [c, r] = cellOf(k), cut = cutOf(edges, c, r); return cut ? Object.keys(TRIS[cut]) : ['full']; };
+  const legs = (k, p) => { if (p === 'full') return ['t', 'b', 'l', 'r']; const [c, r] = cellOf(k); return TRIS[cutOf(edges, c, r)][p]; };
+  const parent = new Map();
+  const find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  for (const k of Object.keys(W)) for (const p of partsOf(k)) parent.set(`${k}|${p}`, `${k}|${p}`);
+  for (const k of Object.keys(W)) {
+    const [c, r] = cellOf(k);
+    for (const p of partsOf(k)) {
+      for (const s of legs(k, p)) {
+        const [dc, dr, back] = SIDE_OF[s], n = cellKey(c + dc, r + dr);
+        if (!(n in W)) continue;
+        const q = partsOf(n).find((x) => legs(n, x).includes(back));
+        if (q) parent.set(find(`${k}|${p}`), find(`${n}|${q}`));
+      }
+    }
+  }
+  const sides = [new Set(), new Set()];
+  for (const e of along) {
+    const [dir, rest] = e.split(':');
+    if (!(rest in W) || !TRIS[dir]) continue;
+    Object.keys(TRIS[dir]).forEach((t, i) => sides[i].add(find(`${rest}|${t}`)));
+  }
+  if (!sides[0].size || [...sides[0]].some((x) => sides[1].has(x))) return [];
+  const area = new Map();
+  for (const x of parent.keys()) { const root = find(x); area.set(root, (area.get(root) ?? 0) + (x.endsWith('|full') ? 1 : 0.5)); }
+  const sum = (set) => [...set].reduce((n, x) => n + area.get(x), 0);
+  const a0 = sum(sides[0]), a1 = sum(sides[1]);
+  if (a0 === a1) return [];
+  const small = a0 < a1 ? sides[0] : sides[1];
+  return Object.keys(W).filter((k) => partsOf(k).every((p) => small.has(find(`${k}|${p}`))));
+}
+
+/** Is a point (squares) in a room, with the squares cut in half (`split`) taken into account? */
+function inRoom(sk, split, x, y) {
+  const c = Math.floor(x), r = Math.floor(y), k = cellKey(c, r);
+  if (!(k in sk.cells)) return false;
+  const sp = split.get(k);
+  if (!sp) return true;
+  const fx = x - c, fy = y - r;
+  const t = sp.cut === 'd' ? (fx > fy ? 'ne' : 'sw') : (fx + fy < 1 ? 'nw' : 'se');
+  return !!sp.tris[t]?.room;
+}
+
+/** Does a square have room along its side s (a whole room square, or a room triangle's leg)? */
+function roomAlong(sk, split, c, r, s) {
+  const k = cellKey(c, r);
+  if (!(k in sk.cells)) return false;
+  const sp = split.get(k);
+  return !sp || Object.entries(sp.tris).some(([t, x]) => x?.room && TRIS[sp.cut][t].includes(s));
+}
 
 // ------------------------------------------------------------------ walls
 
@@ -119,7 +366,8 @@ export function sketchWalls(sk, g, level = '') {
   const base = sk.wall_style || 'ink';
   const styleOf = (e) => sk.styles[e] || base;
   const circles = Object.entries(sk.shapes).filter(([, s]) => s.walled !== false && s.r > 0);
-  const inside = (x, y) => cellKey(Math.floor(x / g), Math.floor(y / g)) in W
+  const split = splitSquares(sk);
+  const inside = (x, y) => inRoom(sk, split, x / g, y / g)
     || circles.some(([, c]) => (x / g - c.x) ** 2 + (y / g - c.y) ** 2 < c.r * c.r);
   // A piece of wall belongs where one side is room and the other isn't. Sampled at a few points,
   // so where two shapes meet a wall runs a touch long rather than leaving a gap.
@@ -163,8 +411,13 @@ export function sketchWalls(sk, g, level = '') {
         && Math.max(seg.a[1], seg.b[1]) > cy - rr && Math.min(seg.a[1], seg.b[1]) < cy + rr;
     });
     for (const k of Object.keys(W)) {
-      for (const [e, next] of SIDES(...cellOf(k))) {
-        if (next in W || e in edges) continue;
+      const [c, r] = cellOf(k);
+      const sp = split.get(k);
+      // A whole square's four sides; a cut one's room triangles' legs.
+      const sides = sp ? [...new Set(Object.entries(sp.tris).filter(([, x]) => x?.room).flatMap(([t]) => TRIS[sp.cut][t]))] : ['t', 'b', 'l', 'r'];
+      for (const s of sides) {
+        const e = sideEdge(c, r, s), [dc, dr, back] = SIDE_OF[s];
+        if (roomAlong(sk, split, c + dc, r + dr, back) || e in edges) continue;
         const seg = edgeSegment(e, g);
         if (!nearCircle(seg)) { whole.push(e); continue; }
         const cut = [];
@@ -275,16 +528,44 @@ function geometry(base, draft, g, level = '') {
   const byMat = new Map(), roomRegion = new Path2D(), floorEdge = new Path2D(), seams = new Path2D();
   const mat = (m) => { let p = byMat.get(m); if (!p) byMat.set(m, (p = new Path2D())); return p; };
   const rows = new Map();
+  // Squares cut by a diagonal: a triangle on each side, each with its own floor (or none).
+  const split = splitSquares(sk);
+  const hasAlong = (c, r, s) => {
+    const k = cellKey(c, r);
+    if (!(k in all)) return false;
+    const sp = split.get(k);
+    return !sp || Object.entries(sp.tris).some(([t, x]) => x && TRIS[sp.cut][t].includes(s));
+  };
+  for (const [k, sp] of split) {
+    const [c, r] = cellOf(k);
+    const tris = Object.entries(sp.tris);
+    for (const [t, x] of tris) {
+      if (!x) continue;
+      const tri = new Path2D(), pts = TRI_PTS[t];
+      pts.forEach(([px, py], i) => (i ? tri.lineTo((c + px) * g, (r + py) * g) : tri.moveTo((c + px) * g, (r + py) * g)));
+      tri.closePath();
+      mat(x.material).addPath(tri);
+      if (x.room) roomRegion.addPath(tri);
+      for (const s of TRIS[sp.cut][t]) {
+        const [dc, dr, back] = SIDE_OF[s];
+        if (!hasAlong(c + dc, r + dr, back)) { const e = edgeSegment(sideEdge(c, r, s), g); floorEdge.moveTo(...e.a); floorEdge.lineTo(...e.b); }
+      }
+    }
+    // Floor on one side only: the diagonal is its edge.
+    if (tris.some(([, x]) => !x)) { const e = edgeSegment(`${sp.cut}:${c},${r}`, g); floorEdge.moveTo(...e.a); floorEdge.lineTo(...e.b); }
+  }
   for (const [k, m] of Object.entries(all)) {
+    if (split.has(k)) continue;
     const [c, r] = cellOf(k);
     let row = rows.get(r);
     if (!row) rows.set(r, (row = []));
     row.push([c, m]);
     if (k in sk.cells) roomRegion.rect(c * g, r * g, g, g);
     // The soft edge of all floor, and seams where materials meet.
-    for (const [e, next] of SIDES(c, r)) {
+    for (const [i, [e, next]] of SIDES(c, r).entries()) {
       const s = edgeSegment(e, g);
-      if (!(next in all)) { floorEdge.moveTo(...s.a); floorEdge.lineTo(...s.b); } else if (all[next] !== m && next > k) { seams.moveTo(...s.a); seams.lineTo(...s.b); }
+      const side = 'tblr'[i], [dc, dr, back] = SIDE_OF[side];
+      if (!hasAlong(c + dc, r + dr, back)) { floorEdge.moveTo(...s.a); floorEdge.lineTo(...s.b); } else if (!split.has(next) && all[next] !== m && next > k) { seams.moveTo(...s.a); seams.lineTo(...s.b); }
     }
   }
   for (const [r, row] of rows) {
@@ -330,9 +611,308 @@ function geometry(base, draft, g, level = '') {
   return out;
 }
 
+/** An outline (corners in squares, [x, y]) as a closed path in scene pixels. */
+function polyPath(poly, g, p = new Path2D()) {
+  poly.forEach(([x, y], i) => (i ? p.lineTo(x * g, y * g) : p.moveTo(x * g, y * g)));
+  p.closePath();
+  return p;
+}
+
+// ------------------------------------------------------------------ traced buildings
+
+const bwalls = new Map(); // level → { key, list }
+
+/**
+ * A level's traced buildings' walls as segments in scene pixels ({ a, b } of { x, y }), for
+ * sight, movement and sound. Worked out once per change.
+ */
+export function buildingWalls(s, level = '') {
+  const sk = sketchOf(s, level);
+  if (!sk?.buildings) return [];
+  const g = s.grid?.size ?? 70;
+  const key = `${s.id}|${rev}|${g}`;
+  const c = bwalls.get(level);
+  if (c?.key === key) return c.list;
+  const list = [];
+  for (const b of Object.values(sk.buildings)) {
+    const pts = b?.poly;
+    if (b?.walled === false || !(pts?.length >= 3)) continue;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], z = pts[(i + 1) % pts.length];
+      if (a[0] !== z[0] || a[1] !== z[1]) list.push({ a: { x: a[0] * g, y: a[1] * g }, b: { x: z[0] * g, y: z[1] * g } });
+    }
+  }
+  bwalls.set(level, { key, list });
+  return list;
+}
+
+const boxOf = (pts) => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return { x0, y0, x1, y1 };
+};
+const insidePoly = (pts, x, y) => {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+};
+
+/** The traced building at a point (squares) on a level, or null; `roofed`: only one with a roof. */
+export function buildingAt(s, level, x, y, roofed = false) {
+  const sk = sketchOf(s, level);
+  for (const [id, b] of Object.entries(sk?.buildings ?? {})) {
+    if (!(b?.poly?.length >= 3) || (roofed && !b.roof)) continue;
+    const r = boxOf(b.poly);
+    if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) continue;
+    if (insidePoly(b.poly, x, y)) return id;
+  }
+  return null;
+}
+
+const shapes = new Map(); // building id → { sig, shape }: its roof's planes, worked out once
+
+/** A traced building's roof: its outline turned clockwise, and the planes and lines over it. */
+function buildingRoof(id, poly) {
+  const sig = JSON.stringify(poly);
+  const c = shapes.get(id);
+  if (c?.sig === sig) return c.shape;
+  let pts = poly.map(([x, y]) => ({ x, y }));
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; area += a.x * b.y - b.x * a.y; }
+  if (area < 0) pts = pts.reverse();
+  let faces = null, lines = [];
+  try {
+    const sk = straightSkeleton([pts]);
+    faces = sk && roofFaces(sk);
+    if (faces) lines = sk.arcs.map((a) => [a.a, a.b]);
+  } catch { faces = null; }
+  const shape = { pts, faces: faces || null, lines: faces ? lines : [] };
+  shapes.set(id, { sig, shape });
+  return shape;
+}
+
+const TILE = 16; // squares
+const btiles = new Map(); // level → { key, tiles }
+
+/**
+ * A level's traced buildings in tiles of 16 × 16 squares (a building goes in the tile its middle
+ * is in), each with the paths to draw it, so only those on screen are drawn: a city has thousands.
+ * { sig (what's in it, as text), x0, y0, x1, y1 (scene pixels round its buildings), floor
+ * (material → path), edge, wall, room, byStyle (wall style → path), roofs [{ id, material, poly }],
+ * roofPaths }
+ */
+function buildingTiles(s, level, g) {
+  const sk = sketchOf(s, level);
+  if (!sk?.buildings) return [];
+  const key = `${s.id}|${rev}|${g}`;
+  const c = btiles.get(level);
+  if (c?.key === key) return c.tiles;
+  const own = sk.wall_style || 'ink';
+  const byKey = new Map();
+  const add = (map, k, path) => { let x = map.get(k); if (!x) map.set(k, (x = new Path2D())); x.addPath(path); };
+  for (const [id, b] of Object.entries(sk.buildings)) {
+    if (!(b?.poly?.length >= 3)) continue;
+    const r = boxOf(b.poly);
+    const k = `${Math.floor((r.x0 + r.x1) / 2 / TILE)},${Math.floor((r.y0 + r.y1) / 2 / TILE)}`;
+    let t = byKey.get(k);
+    if (!t) byKey.set(k, (t = { sig: `${g}|${own}`, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, floor: new Map(), edge: new Path2D(), wall: new Path2D(), room: new Path2D(), byStyle: new Map(), roofs: [], roofPaths: null }));
+    t.sig += `|${id}:${JSON.stringify(b)}`;
+    t.x0 = Math.min(t.x0, r.x0 * g); t.y0 = Math.min(t.y0, r.y0 * g); t.x1 = Math.max(t.x1, r.x1 * g); t.y1 = Math.max(t.y1, r.y1 * g);
+    const path = polyPath(b.poly, g);
+    if (b.material) add(t.floor, b.material, path);
+    if (b.walled === false) { if (b.material) t.edge.addPath(path); } else {
+      t.room.addPath(path);
+      t.wall.addPath(path);
+      add(t.byStyle, b.wall_style || own, path);
+    }
+    if (b.roof) t.roofs.push({ id, material: b.roof, poly: b.poly });
+  }
+  const tiles = [...byKey.values()];
+  btiles.set(level, { key, tiles });
+  return tiles;
+}
+
+/** What of the scene a context shows: its box in scene pixels, and its scale (device pixels a scene pixel). */
+function viewOf(ctx) {
+  const m = ctx.getTransform(), inv = m.inverse();
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  const pts = [[0, 0], [w, 0], [0, h], [w, h]].map(([x, y]) => inv.transformPoint({ x, y }));
+  return { x0: Math.min(...pts.map((q) => q.x)), y0: Math.min(...pts.map((q) => q.y)), x1: Math.max(...pts.map((q) => q.x)), y1: Math.max(...pts.map((q) => q.y)), scale: Math.hypot(m.a, m.b) };
+}
+
+const BAKE_MAX = 64; // device pixels a square: closer than this, tiles are drawn as paths
+/**
+ * The tiles on screen; `bake`: the pixels a square their pictures are made at (0: closer in than
+ * pictures are made for); `far`: too small on screen for the fine detail.
+ */
+function tilesOnView(tiles, ctx, g) {
+  const v = viewOf(ctx), m = g, pps = g * v.scale;
+  const vis = tiles.filter((t) => t.x1 + m >= v.x0 && t.x0 - m <= v.x1 && t.y1 + m >= v.y0 && t.y0 - m <= v.y1);
+  return { vis, far: pps < 10, bake: pps > BAKE_MAX ? 0 : Math.max(4, 2 ** Math.ceil(Math.log2(pps))) };
+}
+
+// Tiles' pictures, made once at a zoom and drawn while panning (paths for a city are too slow).
+// Most recently used last; the oldest go past BAKED_BYTES.
+const baked = new Map(); // key → { canvas, x, y, w, h, bytes, stale, retry }
+let bakedBytes = 0;
+const BAKED_BYTES = 192e6;
+let frameAt = null, budgetEnd = 0;
+/** Time left this frame for making pictures (10 ms a frame). */
+function bakeTime() {
+  const f = document.timeline?.currentTime ?? 0;
+  if (f !== frameAt) { frameAt = f; budgetEnd = performance.now() + 10; }
+  return performance.now() < budgetEnd;
+}
+hooks.on('textures:changed', () => { baked.clear(); bakedBytes = 0; });
+
+/**
+ * A tile's picture at `pps` pixels a square, made by `paint(c, fill)` (fill: a material's fill;
+ * one not loaded yet makes the picture stale, to be made again). Null if it isn't made yet (no
+ * time left this frame: `board` is asked for another).
+ */
+function tilePicture(key, t, g, pps, paint, board) {
+  let e = baked.get(key);
+  const fresh = e && (!e.stale || performance.now() < e.retry);
+  if (e) { baked.delete(key); baked.set(key, e); }
+  if (fresh) return e;
+  if (!bakeTime()) { board?.invalidate(); return e ?? null; }
+  const pad = g, sc = pps / g;
+  const w = Math.max(1, Math.ceil((t.x1 - t.x0 + pad * 2) * sc)), h = Math.max(1, Math.ceil((t.y1 - t.y0 + pad * 2) * sc));
+  const canvas = e?.canvas.width === w && e.canvas.height === h ? e.canvas : document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const c = canvas.getContext('2d');
+  c.setTransform(sc, 0, 0, sc, -(t.x0 - pad) * sc, -(t.y0 - pad) * sc);
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  let ok = true;
+  const fill = (m, u) => { const f = fillFor(c, m, u, board); if (typeof f === 'string') ok = false; return f; };
+  paint(c, fill);
+  if (e) bakedBytes -= e.bytes;
+  e = { canvas, x: t.x0 - pad, y: t.y0 - pad, w: w / sc, h: h / sc, bytes: w * h * 4, stale: !ok, retry: performance.now() + 400 };
+  if (!ok) board?.invalidate();
+  baked.set(key, e);
+  bakedBytes += e.bytes;
+  for (const [k, x] of baked) { if (bakedBytes <= BAKED_BYTES || k === key) break; baked.delete(k); bakedBytes -= x.bytes; }
+  return e;
+}
+
+/** A tile's floors, walls (their shadow outside, shade inside, ink) as one picture. */
+function paintTileWalls(c, t, g, fill) {
+  c.save();
+  c.strokeStyle = 'rgba(0,0,0,0.3)';
+  c.lineWidth = g * 0.6;
+  c.stroke(t.wall);
+  c.strokeStyle = 'rgba(0,0,0,0.35)';
+  c.lineWidth = g * 0.3;
+  c.stroke(t.wall);
+  c.globalCompositeOperation = 'destination-out';
+  c.fill(t.room);
+  c.restore();
+  c.strokeStyle = 'rgba(0,0,0,0.4)';
+  c.lineWidth = g * 0.12;
+  c.stroke(t.edge);
+  for (const [m, path] of t.floor) { c.fillStyle = fill(m, g); c.fill(path); vary(c, m, g, () => c.fill(path)); }
+  c.save();
+  c.clip(t.room);
+  c.strokeStyle = 'rgba(0,0,0,0.3)';
+  c.lineWidth = g * 0.22;
+  c.stroke(t.wall);
+  c.restore();
+  inkWalls(c, t.byStyle, g, fill);
+}
+
+/** Walls in ink; textured ones as a band of texture edged in ink (all the edges first). */
+function inkWalls(c, byStyle, g, fill) {
+  const band = g * 0.24, edge = Math.max(1.5, g * 0.03);
+  for (const [style, path] of byStyle) {
+    c.strokeStyle = INK;
+    if (style === 'ink' || !style) { c.lineCap = 'round'; c.lineWidth = Math.max(2, g * 0.08); } else { c.lineCap = 'square'; c.lineWidth = band + edge * 2; }
+    c.stroke(path);
+  }
+  c.lineCap = 'square';
+  for (const [style, path] of byStyle) {
+    if (style === 'ink' || !style) continue;
+    c.strokeStyle = fill(style, g * 0.6);
+    c.lineWidth = band;
+    c.stroke(path);
+  }
+  c.lineCap = 'round';
+}
+
+/** A tile's roofs (but `hidden`'s): planes by material, shaded by slope, ridges and eaves inked. */
+function paintTileRoofs(c, t, g, hidden, hk, fill, far = false) {
+  let P = t.roofPaths;
+  if (!P || P.hk !== hk) {
+    P = t.roofPaths = { hk, all: new Path2D(), byMat: new Map(), shade: Array.from({ length: 11 }, () => new Path2D()), lines: new Path2D() };
+    const pt = (q) => [q.x * g, q.y * g];
+    const poly = (pts, p) => { pts.forEach((q, i) => (i ? p.lineTo(...pt(q)) : p.moveTo(...pt(q)))); p.closePath(); };
+    for (const r of t.roofs) {
+      if (hidden?.has(r.id)) continue;
+      const shape = buildingRoof(r.id, r.poly);
+      const out = new Path2D();
+      poly(shape.pts, out);
+      P.all.addPath(out);
+      if (!P.byMat.has(r.material)) P.byMat.set(r.material, new Path2D());
+      P.byMat.get(r.material).addPath(out);
+      for (const f of shape.faces ?? []) {
+        const lit = -(f.n.x * LIGHT.x + f.n.y * LIGHT.y);
+        poly(f.poly, P.shade[Math.round((lit + 1) * 5)]);
+      }
+      for (const [a, b] of shape.lines) { P.lines.moveTo(...pt(a)); P.lines.lineTo(...pt(b)); }
+    }
+  }
+  c.save();
+  c.strokeStyle = INK;
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  c.save();
+  c.translate(g * 0.12, g * 0.12);
+  c.fillStyle = 'rgba(0,0,0,0.35)';
+  c.fill(P.all);
+  c.restore();
+  for (const [m, path] of P.byMat) { c.fillStyle = fill(m, g * 0.8); c.fill(path); }
+  if (!far) {
+    P.shade.forEach((path, i) => {
+      const lit = i / 5 - 1;
+      if (Math.abs(lit) < 0.05) return;
+      c.fillStyle = lit > 0 ? `rgba(255,255,255,${(0.12 * lit).toFixed(3)})` : `rgba(0,0,0,${(0.28 * -lit).toFixed(3)})`;
+      c.fill(path);
+    });
+    c.lineWidth = Math.max(1, g * 0.035);
+    c.stroke(P.lines);
+  }
+  c.lineWidth = Math.max(1.5, g * 0.06);
+  c.stroke(P.all);
+  c.restore();
+}
+
+/**
+ * Draw a level's traced buildings' roofs (those on screen), from each tile's picture (close in:
+ * as paths). `hidden`: ids not drawn (a player's token is inside).
+ */
+export function drawBuildingRoofs(ctx, s, level, board, { hidden = null, alpha = 1 } = {}) {
+  const g = s.grid?.size ?? 70;
+  const { vis, far, bake } = tilesOnView(buildingTiles(s, level, g), ctx, g);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  for (const t of vis) {
+    if (!t.roofs.length) continue;
+    const hk = hidden?.size ? t.roofs.filter((r) => hidden.has(r.id)).map((r) => r.id).join(',') : '';
+    if (bake) {
+      const e = tilePicture(`r|${level}|${bake}|${hk}|${t.sig}`, t, g, bake, (c, fill) => paintTileRoofs(c, t, g, hidden, hk, fill), board);
+      if (e) { ctx.drawImage(e.canvas, e.x, e.y, e.w, e.h); continue; }
+    }
+    paintTileRoofs(ctx, t, g, hidden, hk, (m, u) => fillFor(ctx, m, u, board), far);
+  }
+  ctx.restore();
+}
+
 let patterns = new WeakMap(); // ctx → Map(material → { pat, span })
 // A texture made in the texture creator changed (or its picture arrived): make its pattern again.
-hooks.on('textures:changed', () => { patterns = new WeakMap(); });
+hooks.on('textures:changed', () => { patterns = new WeakMap(); terrainTexturesChanged(); waterTexturesChanged(); });
 
 /** A fill for a material: a repeating pattern scaled to the grid, or a flat colour while it loads. */
 /** A made texture's map-wide light and dark, over what `fill` just painted with it. */
@@ -357,8 +937,9 @@ function fillFor(ctx, m, g, board, turn = null) {
     if (!tex && m?.startsWith?.('tex:')) return '#6b6359';
     const src = tex ?? board.image(m);
     if (!src) return '#6b6359';
-    // Built-ins cover 2 × 2 squares; an uploaded texture covers 4 squares across.
-    entry = { pat: ctx.createPattern(src, 'repeat'), span: tex ? TILE_SIZE / TILE_SQUARES : (src.naturalWidth || 256) / 4 };
+    // Built-ins cover 2 × 2 squares; an uploaded texture covers 4 squares across, unless its
+    // URL says how many pixels make a square.
+    entry = { pat: ctx.createPattern(src, 'repeat'), span: tex ? TILE_SIZE / TILE_SQUARES : pxOfMaterial(m) ?? (src.naturalWidth || 256) / 4 };
     pats.set(m, entry);
   }
   // `turn`: { x, y, deg } — the pattern turned about a point (a roof plane's rows along its eave).
@@ -391,11 +972,33 @@ export function drawSketch(ctx, s, board, { level = '', draft = null } = {}) {
     ctx.fillRect(0, 0, s.width, s.height);
     vary(ctx, sk.outside, g, () => ctx.fillRect(0, 0, s.width, s.height));
   }
+  // Painted ground, over what's outside, then water (the ground level only).
+  const fill = (c, m, gg, r) => {
+    const f = fillFor(c, m, gg, board);
+    c.fillStyle = f;
+    c.fillRect(r.x, r.y, r.w, r.h);
+    vary(c, m, gg, () => c.fillRect(r.x, r.y, r.w, r.h));
+    return typeof f !== 'string';
+  };
+  if (!level && sk.terrain) drawTerrain(ctx, s, sk.terrain, g, fill, () => board?.invalidate());
+  if (!level && sk.water) drawWater(ctx, s, sk.water, g, fill, () => board?.invalidate(), !!board && sk.water.animate !== false && animatedMaps());
   // A soft edge round every floor, then the floors.
   ctx.strokeStyle = 'rgba(0,0,0,0.4)';
   ctx.lineWidth = g * 0.12;
   ctx.stroke(geo.floorEdge);
   for (const [m, path] of geo.byMat) { ctx.fillStyle = fillFor(ctx, m, g, board); ctx.fill(path); vary(ctx, m, g, () => ctx.fill(path)); }
+  // Traced buildings on screen (a whole city drawn at once would be slow): each tile as a picture
+  // made at this zoom, or close in (or until its picture is made) as paths, floors first.
+  const { vis, far, bake } = tilesOnView(buildingTiles(s, level, g), ctx, g);
+  const tiles = [];
+  for (const t of vis) {
+    const e = bake ? tilePicture(`w|${level}|${bake}|${t.sig}`, t, g, bake, (c, fill) => paintTileWalls(c, t, g, fill), board) : null;
+    if (e) ctx.drawImage(e.canvas, e.x, e.y, e.w, e.h); else tiles.push(t);
+  }
+  for (const t of tiles) {
+    if (!far) { ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = g * 0.12; ctx.stroke(t.edge); }
+    for (const [m, path] of t.floor) { ctx.fillStyle = fillFor(ctx, m, g, board); ctx.fill(path); if (!far) vary(ctx, m, g, () => ctx.fill(path)); }
+  }
   for (const { shape, path } of geo.shapes) { ctx.fillStyle = fillFor(ctx, shape.material, g, board); ctx.fill(path); vary(ctx, shape.material, g, () => ctx.fill(path)); }
   ctx.strokeStyle = 'rgba(20, 15, 10, 0.55)';
   ctx.lineWidth = Math.max(1, g * 0.03);
@@ -419,11 +1022,14 @@ export function drawSketch(ctx, s, board, { level = '', draft = null } = {}) {
   lc.strokeStyle = 'rgba(0,0,0,0.3)';
   lc.lineWidth = g * 0.6;
   lc.stroke(geo.wallPath);
+  if (!far) for (const t of tiles) lc.stroke(t.wall);
   lc.strokeStyle = 'rgba(0,0,0,0.35)';
   lc.lineWidth = g * 0.3;
   lc.stroke(geo.wallPath);
+  if (!far) for (const t of tiles) lc.stroke(t.wall);
   lc.globalCompositeOperation = 'destination-out';
   lc.fill(geo.roomRegion);
+  if (!far) for (const t of tiles) lc.fill(t.room);
   lc.globalCompositeOperation = 'source-over';
   const t = ctx.getTransform();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -436,22 +1042,21 @@ export function drawSketch(ctx, s, board, { level = '', draft = null } = {}) {
   ctx.lineWidth = g * 0.22;
   ctx.stroke(geo.wallPath);
   ctx.restore();
+  if (!far) {
+    for (const t of tiles) {
+      ctx.save();
+      ctx.clip(t.room);
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = g * 0.22;
+      ctx.stroke(t.wall);
+      ctx.restore();
+    }
+  }
   // Ink lines; textured walls as a band of texture edged in ink (all the edges first, so where
   // two styles meet neither's edge crosses the other's band).
-  const band = g * 0.24, edge = Math.max(1.5, g * 0.03);
-  for (const [style, path] of geo.byStyle) {
-    ctx.strokeStyle = INK;
-    if (style === 'ink' || !style) { ctx.lineCap = 'round'; ctx.lineWidth = Math.max(2, g * 0.08); } else { ctx.lineCap = 'square'; ctx.lineWidth = band + edge * 2; }
-    ctx.stroke(path);
-  }
-  ctx.lineCap = 'square';
-  for (const [style, path] of geo.byStyle) {
-    if (style === 'ink' || !style) continue;
-    ctx.strokeStyle = fillFor(ctx, style, g * 0.6, board);
-    ctx.lineWidth = band;
-    ctx.stroke(path);
-  }
-  ctx.lineCap = 'round';
+  const wallFill = (m, u) => fillFor(ctx, m, u, board);
+  inkWalls(ctx, geo.byStyle, g, wallFill);
+  for (const t of tiles) inkWalls(ctx, t.byStyle, g, wallFill);
   drawRailings(ctx, geo.railings, g);
 
   drawOpenings(ctx, s, g, level, board ? board.gmView : isGM(), sk);

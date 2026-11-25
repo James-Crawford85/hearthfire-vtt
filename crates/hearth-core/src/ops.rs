@@ -1029,6 +1029,132 @@ mod sketch_tests {
     }
 
     #[test]
+    fn diagonal_walls_block_and_their_doors_and_windows_work() {
+        // A room's corner cut off at 45° ("u" diagonals of squares 0,1 and 1,0), with a door in
+        // one square of it, as the web client sends it: the diagonal wall and its door are
+        // ordinary walls at 45°.
+        let mut w = World::new("T", "freeform");
+        let sid = w.active_scene.clone().unwrap();
+        w.apply(&Op::SketchUpdate {
+            scene_id: sid.clone(),
+            patch: json!({"cells": {"1,1": "stone", "0,1": "stone", "1,0": "stone"}, "edges": {"u:0,1": "wall", "u:1,0": "door"}, "size": 70}),
+            walls: walls(json!({
+                "sk-e-0": {"id": "sk-e-0", "a": [0, 140], "b": [70, 70]},
+                "sk-d-u:1,0": {"id": "sk-d-u:1,0", "a": [70, 70], "b": [140, 0], "kind": "door"},
+            })),
+            lights: None,
+            links: None,
+            level: String::new(),
+        })
+        .unwrap();
+        let sk = w.scenes[&sid].sketch.as_ref().unwrap();
+        assert_eq!(sk.edges["u:0,1"], "wall");
+        assert_eq!(sk.edges["u:1,0"], "door");
+        let s = &w.scenes[&sid];
+        // Across the wall, straight or slantwise; and past its end where it meets the door.
+        assert!(s.move_blocked([20.0, 90.0], [60.0, 130.0]), "through the diagonal wall");
+        assert!(s.move_blocked([10.0, 100.0], [100.0, 100.0]), "straight across it");
+        assert!(s.move_blocked([90.0, 20.0], [130.0, 60.0]), "through the closed door");
+        assert!(!s.move_blocked([20.0, 20.0], [40.0, 40.0]), "outside, short of it");
+        w.apply(&Op::WallUpdate { scene_id: sid.clone(), id: "sk-d-u:1,0".into(), patch: json!({"open": true}) }).unwrap();
+        let s = &w.scenes[&sid];
+        assert!(!s.move_blocked([90.0, 20.0], [130.0, 60.0]), "through the open door");
+        assert!(s.move_blocked([20.0, 90.0], [60.0, 130.0]), "the wall beside it still blocks");
+        // A window there: seen through, not walked through.
+        w.apply(&Op::WallUpdate { scene_id: sid.clone(), id: "sk-d-u:1,0".into(), patch: json!({"kind": "window", "open": false}) }).unwrap();
+        let win = &w.scenes[&sid].walls["sk-d-u:1,0"];
+        assert!(win.blocks_movement() && win.sight() == crate::model::Sense::Pass);
+        assert!(w.scenes[&sid].move_blocked([90.0, 20.0], [130.0, 60.0]));
+    }
+
+    #[test]
+    fn triangles_of_cut_squares_keep_their_floors() {
+        let mut w = World::new("T", "freeform");
+        let sid = w.active_scene.clone().unwrap();
+        let up = |w: &mut World, patch| w.apply(&Op::SketchUpdate { scene_id: sid.clone(), patch, walls: None, lights: None, links: None, level: String::new() }).unwrap();
+        up(&mut w, json!({"cells": {"1,1": "stone"}, "edges": {"u:1,1": "wall"}, "halves": {"1,1": {"nw": "floor:grass", "se": "room:stone"}}}));
+        let sk = w.scenes[&sid].sketch.as_ref().unwrap();
+        assert_eq!(sk.halves["1,1"]["nw"], "floor:grass");
+        assert_eq!(sk.halves["1,1"]["se"], "room:stone");
+        // One triangle painted again, the other untouched; then the square erased.
+        up(&mut w, json!({"halves": {"1,1": {"nw": "none"}}}));
+        let sk = w.scenes[&sid].sketch.as_ref().unwrap();
+        assert_eq!((sk.halves["1,1"]["nw"].as_str(), sk.halves["1,1"]["se"].as_str()), ("none", "room:stone"));
+        up(&mut w, json!({"cells": {"1,1": null}, "halves": {"1,1": null}}));
+        let v = serde_json::to_value(w.scenes[&sid].sketch.as_ref().unwrap()).unwrap();
+        assert!(v.get("halves").is_none(), "a sketch without painted triangles is written as before");
+    }
+
+    #[test]
+    fn roofs_keep_their_cut_corners() {
+        let mut w = World::new("T", "freeform");
+        let sid = w.active_scene.clone().unwrap();
+        let up = |w: &mut World, patch| w.apply(&Op::SketchUpdate { scene_id: sid.clone(), patch, walls: None, lights: None, links: None, level: String::new() }).unwrap();
+        up(&mut w, json!({"roofs": {"r": {"x": 0, "y": 0, "w": 6, "h": 6, "material": "shingles", "cuts": {"nw": 2, "se": 2}}, "p": {"x": 8, "y": 0, "w": 2, "h": 2, "material": "shingles"}}}));
+        let sk = w.scenes[&sid].sketch.as_ref().unwrap();
+        assert_eq!((sk.roofs["r"].cuts["nw"], sk.roofs["r"].cuts["se"]), (2.0, 2.0));
+        let v = serde_json::to_value(sk).unwrap();
+        assert!(v["roofs"]["p"].get("cuts").is_none(), "a roof without cut corners is written as before");
+    }
+
+    #[test]
+    fn terrain_chunks_merge_slot_by_slot() {
+        let mut w = World::new("T", "freeform");
+        let sid = w.active_scene.clone().unwrap();
+        let up = |w: &mut World, patch| w.apply(&Op::SketchUpdate { scene_id: sid.clone(), patch, walls: None, lights: None, links: None, level: String::new() }).unwrap();
+        up(&mut w, json!({"terrain": {"slots": {"1": {"material": "grass"}}, "chunks": {"0,0": {"1": "z:aa"}}}}));
+        up(&mut w, json!({"terrain": {"slots": {"2": {"material": "dirt", "edge": 0.5}}, "chunks": {"0,0": {"2": "z:bb"}, "1,0": {"1": "z:cc"}}}}));
+        let t = w.scenes[&sid].sketch.as_ref().unwrap().terrain.clone().unwrap();
+        assert_eq!(t.slots["1"].scale, 1.0);
+        assert_eq!(t.slots["2"].edge, 0.5);
+        assert_eq!((t.chunks["0,0"]["1"].as_str(), t.chunks["0,0"]["2"].as_str()), ("z:aa", "z:bb"), "a chunk keeps the slots not sent");
+        up(&mut w, json!({"terrain": {"slots": {"1": null}, "chunks": {"0,0": {"1": null}, "1,0": null}}}));
+        let t = w.scenes[&sid].sketch.as_ref().unwrap().terrain.clone().unwrap();
+        assert!(!t.slots.contains_key("1") && !t.chunks.contains_key("1,0"));
+        assert_eq!(t.chunks["0,0"].len(), 1);
+        up(&mut w, json!({"terrain": null}));
+        assert!(w.scenes[&sid].sketch.as_ref().unwrap().terrain.is_none());
+    }
+
+    #[test]
+    fn water_bodies_chunks_and_flow_merge() {
+        let mut w = World::new("T", "freeform");
+        let sid = w.active_scene.clone().unwrap();
+        let up = |w: &mut World, patch| w.apply(&Op::SketchUpdate { scene_id: sid.clone(), patch, walls: None, lights: None, links: None, level: String::new() }).unwrap();
+        up(&mut w, json!({"water": {"bodies": {"1": {"kind": "river", "shore": "dirt"}}, "chunks": {"0,0": {"1": "z:aa"}}, "flow": {"0,0": "z:ff"}}}));
+        up(&mut w, json!({"water": {"bodies": {"1": {"clarity": 0.8}}, "chunks": {"1,0": {"1": "z:bb"}}}}));
+        let wt = w.scenes[&sid].sketch.as_ref().unwrap().water.clone().unwrap();
+        let b = &wt.bodies["1"];
+        assert_eq!((b.kind.as_str(), b.water.as_str(), b.shore.as_deref(), b.clarity, b.depth), ("river", "water", Some("dirt"), 0.8, 3.0));
+        assert!(wt.animate);
+        assert_eq!((wt.chunks.len(), wt.flow["0,0"].as_str()), (2, "z:ff"));
+        up(&mut w, json!({"water": {"bodies": {"1": {"shore": null}}, "chunks": {"0,0": null}, "flow": {"0,0": null}, "animate": false}}));
+        let wt = w.scenes[&sid].sketch.as_ref().unwrap().water.clone().unwrap();
+        assert!(wt.bodies["1"].shore.is_none() && !wt.chunks.contains_key("0,0") && wt.flow.is_empty() && !wt.animate);
+        up(&mut w, json!({"water": null}));
+        assert!(w.scenes[&sid].sketch.as_ref().unwrap().water.is_none());
+    }
+
+    #[test]
+    fn traced_buildings_merge_and_block_movement() {
+        let mut w = World::new("T", "freeform");
+        let sid = w.active_scene.clone().unwrap();
+        let g = w.scenes[&sid].grid.size as f64;
+        let up = |w: &mut World, patch| w.apply(&Op::SketchUpdate { scene_id: sid.clone(), patch, walls: None, lights: None, links: None, level: String::new() }).unwrap();
+        // A diamond-shaped building round (5, 5) squares.
+        up(&mut w, json!({"buildings": {"b1": {"poly": [[5, 3], [7, 5], [5, 7], [3, 5]], "roof": "slate"}}}));
+        let s = &w.scenes[&sid];
+        let b = &s.sketch.as_ref().unwrap().buildings["b1"];
+        assert!(b.walled && b.material.is_none() && b.roof.as_deref() == Some("slate"));
+        assert!(s.move_blocked([1.0 * g, 5.0 * g], [5.0 * g, 5.0 * g]), "into the building crosses its wall");
+        assert!(!s.move_blocked([1.0 * g, 1.0 * g], [1.0 * g, 9.0 * g]), "past it doesn't");
+        up(&mut w, json!({"buildings": {"b1": {"walled": false}}}));
+        assert!(!w.scenes[&sid].move_blocked([1.0 * g, 5.0 * g], [5.0 * g, 5.0 * g]), "no walls, no blocking");
+        up(&mut w, json!({"buildings": {"b1": null}}));
+        assert!(w.scenes[&sid].sketch.as_ref().unwrap().buildings.is_empty());
+    }
+
+    #[test]
     fn scenes_without_a_sketch_serialize_as_before() {
         let mut w = World::new("T", "freeform");
         let sid = w.active_scene.clone().unwrap();

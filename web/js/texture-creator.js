@@ -33,7 +33,7 @@ function uploads(extra = []) {
   for (const sc of Object.values(store.world?.scenes ?? {})) {
     for (const sk of [sc.sketch, ...Object.values(sc.level_sketches ?? {})]) {
       if (!sk) continue;
-      for (const m of [...Object.values(sk.cells ?? {}), ...Object.values(sk.floor ?? {}), ...Object.values(sk.shapes ?? {}).map((x) => x.material), sk.outside]) {
+      for (const m of [...Object.values(sk.cells ?? {}), ...Object.values(sk.floor ?? {}), ...Object.values(sk.halves ?? {}).flatMap((e) => Object.values(e).map((v) => v.slice(v.indexOf(':') + 1))), ...Object.values(sk.shapes ?? {}).map((x) => x.material), sk.outside]) {
         if (m && !texture(m) && !m.startsWith('tex:')) urls.add(m);
       }
     }

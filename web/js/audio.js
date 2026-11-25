@@ -17,6 +17,7 @@ import { hooks } from './hooks.js';
 import { store, isGM, ownsActor } from './store.js';
 import { el, toast, openWindow } from './ui.js';
 import { segmentsCross, wallRules } from './vision.js';
+import { buildingWalls } from './sketch.js';
 
 const VOLUME_KEY = 'hearth.volume';
 
@@ -209,7 +210,7 @@ export class Audio {
     const segs = Object.values(s.walls ?? {}).flatMap((w) => {
       const { sound } = wallRules(w);
       return sound === 'pass' ? [] : [{ a: { x: w.a[0], y: w.a[1] }, b: { x: w.b[0], y: w.b[1] }, limited: sound === 'limited' }];
-    });
+    }).concat(buildingWalls(s, b.level ?? ''));
     const ears = this.listeners();
     for (const x of sounds) {
       const gain = Math.max(0, ...ears.map((p) => this.gainAt(x, p, segs)));

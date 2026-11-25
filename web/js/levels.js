@@ -99,7 +99,7 @@ export function openLevels(api) {
     const what = [n('tokens') && `${n('tokens')} token(s) go to the ground`, n('walls') && `${n('walls')} walls`, n('lights') && `${n('lights')} lights`, n('drawings') && `${n('drawings')} drawings`].filter(Boolean);
     if (!confirm(`Remove ${level.name}? Its sketch, walls, lights and drawings are deleted${what.length ? ` (${what.join(', ')})` : ''}.`)) return;
     // Its sketch and what was made from it, then everything else on it, then the level.
-    api.op({ op: 'sketch_update', scene_id: sc.id, level: level.id, patch: Object.fromEntries(['cells', 'floor', 'edges', 'shapes', 'lines', 'props', 'styles', 'roofs'].map((k) => [k, null])), walls: {}, lights: {}, links: {} });
+    api.op({ op: 'sketch_update', scene_id: sc.id, level: level.id, patch: Object.fromEntries(['cells', 'floor', 'edges', 'shapes', 'lines', 'props', 'styles', 'roofs', 'buildings'].map((k) => [k, null])), walls: {}, lights: {}, links: {} });
     for (const t of Object.values(sc.tokens)) if (onLevel(t, level.id)) api.update.token(sc.id, t.id, { level: null });
     for (const [m, op] of [['walls', 'wall_delete'], ['lights', 'light_delete'], ['drawings', 'drawing_delete']]) {
       for (const x of Object.values(sc[m] ?? {})) if (onLevel(x, level.id)) api.op({ op, scene_id: sc.id, id: x.id });

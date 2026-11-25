@@ -4,13 +4,24 @@
 //                  Shift-click one to remove it)
 //   sketch-floor   drag a rectangle of floor without walls: porches, paths, yards (Shift erases)
 //   sketch-brush   paint floor square by square (Shift erases; [ and ] change the size); on a
-//                  room it changes the floor and keeps the walls
+//                  room it changes the floor and keeps the walls. At size 1, over a square cut by
+//                  a diagonal wall, it paints (or erases) just the triangle under the pointer.
+//                  Room and floor rectangles dragged over diagonal walls fill what they enclose.
 //   sketch-erase   erase squares, round rooms and light sources with the brush
-//   sketch-wall    drag along grid lines to add walls, corner to corner at an angle for a
-//                  diagonal; Shift-drag along grid lines takes walls away (rooms' walls too),
+//   sketch-terrain paint ground textures freely (terrain.js), blended into each other and over
+//                  what's outside the rooms (Shift erases back to it; [ and ] change the size)
+//   sketch-water   paint water (water.js): oceans, lakes and rivers, each a body of water with
+//                  its own look; rivers run the way they're painted (Shift erases; Alt-click
+//                  picks the body under the pointer; [ and ] change the size)
+//   sketch-wall    drag along grid lines to add walls, or at 45° for a diagonal (across a room's
+//                  corner it cuts the corner off; Alt: it cuts nothing off, and goes corner to
+//                  corner at any angle); Shift-drag takes walls away (rooms' walls too),
 //                  Shift-click a diagonal removes it
-//   sketch-door    click a grid edge: a door (Shift: secret door); again to remove
-//   sketch-window  click a grid edge: a window; again to remove
+//   sketch-door    click a grid edge or a diagonal wall: a door (Shift: secret door); again to remove
+//   sketch-window  click a grid edge or a diagonal wall: a window; again to remove
+//   sketch-trace   build buildings off the map picture (trace.js): click inside an outline to build
+//                  it, or drag a box to trace all inside it (shown to pick from, then built);
+//                  click a traced one to give it the textures chosen; Shift-click removes one
 //   sketch-place   click to place the chosen prop: a light source (next to a wall it's mounted on
 //                  the wall) or furniture and nature. Props are chosen in the Map props tab of the
 //                  sidebar, and can be dragged from there onto the map.
@@ -26,17 +37,21 @@ import { toast, formDialog, el } from './ui.js';
 import { isGM, store } from './store.js';
 import { hooks } from './hooks.js';
 import { MATERIALS, WALL_STYLES, ROOF_MATERIALS, texture } from './sketch-textures.js';
-import { cellKey, cellOf, withPatch, sketchWalls, plainWalls, sketchLights, sketchLinks, edgeSegment, edgeNear, edgesAlong } from './sketch.js';
+import { cellKey, cellOf, withPatch, sketchWalls, plainWalls, sketchLights, sketchLinks, edgeSegment, edgeNear, edgesAlong, isDiagonal, diagonalNear, cornerCut, splitSquares, cutOf, parseHalf, halfValue, pieceAt, pieceOutline, fillPieces, TRIS as TRI_NAMES } from './sketch.js';
 import { sketchOf, skId, levelsOf, levelName } from './levels.js';
 import { LIGHTS, FURNITURE, PROP_GROUPS, propDef, isLight, isHex, propLightColor, drawPropAt, propThumb, propHit, propOutline } from './sketch-props.js';
-import { drawRoof, roundOpening, roundOpeningsOf, roundOpeningAt, ROUND_OPENINGS } from './sketch.js';
-import { ROUND_ROOFS } from './roof-skeleton.js';
+import { drawRoof, roundOpening, roundOpeningsOf, roundOpeningAt, ROUND_OPENINGS, buildingAt } from './sketch.js';
+import { ROUND_ROOFS, CORNERS, cutsOf, cutLoop, insideRects } from './roof-skeleton.js';
 import { recipes } from './texture-recipes.js';
 import { openTextureCreator } from './texture-creator.js';
+import { beginStroke, onTerrainReady, forgetTerrain, MAX_SLOTS } from './terrain.js';
+import { importPack, libraryTextures } from './dd-pack.js';
+import { beginWaterStroke, bodyAt, forgetWater, PRESETS, KINDS, MAX_BODIES } from './water.js';
+import { mapPixels, traceAt, traceBox } from './trace.js';
 
 const HOVER = 'rgba(255, 190, 40, 0.95)';
 const ERASE = 'rgba(255, 90, 70, 0.95)';
-const MAPS = ['cells', 'floor', 'edges', 'shapes', 'lines', 'props', 'styles', 'roofs'];
+const MAPS = ['cells', 'floor', 'edges', 'halves', 'shapes', 'lines', 'props', 'styles', 'roofs', 'buildings'];
 const PAINT_TOOLS = ['sketch-room', 'sketch-floor', 'sketch-brush', 'sketch-round'];
 const newId = () => Math.random().toString(36).slice(2, 10);
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -52,6 +67,11 @@ export function registerSketch(api) {
     hover: null,  // the world point under the mouse
     drag: null,
     mods: {},     // shiftKey, altKey, free (Ctrl or Cmd: no snapping) as last seen
+    // Painting ground: the texture, the brush's width (squares), how soft its edge is and how
+    // much one stroke lays down (0–1); a new texture's tile size and how ragged its edges are.
+    terrain: { material: 'grass', size: 3, soft: 0.4, strength: 1, scale: 1, edge: 0.6 },
+    // Painting water: the body painted (null: a new one, with this look), the brush's width.
+    water: { body: null, kind: 'lake', ...PRESETS.lake, size: 3 },
   };
   api.sketch = st;
 
@@ -78,6 +98,14 @@ export function registerSketch(api) {
     return out;
   }
 
+  /** The merge patch that undoes `patch` merged into `from`. */
+  function unmerging(from, patch) {
+    if (!plain(patch)) return from === undefined ? null : structuredClone(from);
+    const out = {};
+    for (const [k, v] of Object.entries(patch)) out[k] = plain(v) && plain(from?.[k]) ? unmerging(from[k], v) : from?.[k] === undefined ? null : structuredClone(from[k]);
+    return out;
+  }
+
   /** Send a change to the sketch (maps of entries, null erasing one), with its walls and lights. */
   function commit(patch, { record = true } = {}) {
     const s = scene();
@@ -86,6 +114,14 @@ export function registerSketch(api) {
     const clean = {}, inverse = {};
     let changed = false;
     for (const [k, v] of Object.entries(patch)) {
+      // Painted ground merges in, key by key (its chunks are big: only what changed is sent).
+      if (k === 'terrain' || k === 'water') {
+        if (v === null ? before[k] == null : plain(v) && !Object.keys(v).length) continue;
+        clean[k] = v;
+        inverse[k] = v === null ? before[k] ?? null : before[k] == null ? null : unmerging(before[k], v);
+        changed = true;
+        continue;
+      }
       if (!MAPS.includes(k)) {
         if (!same(before[k], v)) { clean[k] = v; inverse[k] = before[k]; changed = true; }
         continue;
@@ -133,17 +169,54 @@ export function registerSketch(api) {
   }
 
   // What painting does to squares, against the sketch as it is.
+  // A key is a whole square ("c,r") or one triangle of a square cut by a diagonal ("c,r|t"),
+  // which is painted on its own (sketch.halves), leaving the other triangle as it was.
+  const halves = (sk, out, fn) => {
+    const split = splitSquares(sk), entries = new Map();
+    const tri = (piece, value) => {
+      const [k, t] = piece.split('|');
+      if (!entries.has(k)) {
+        const [c, r] = cellOf(k), cut = cutOf(sk.edges, c, r), sp = split.get(k);
+        entries.set(k, Object.fromEntries(Object.keys(TRI_NAMES[cut]).map((x) => [x, sp ? halfValue(sp.tris[x]) : 'none'])));
+      }
+      const e = entries.get(k);
+      e[t] = halfValue(value(parseHalf(e[t])));
+    };
+    fn(tri);
+    // The square as a whole: a room if either triangle is, else floor if either is, else nothing.
+    for (const [k, e] of entries) {
+      const xs = Object.values(e).map(parseHalf).filter(Boolean);
+      const room = xs.find((x) => x.room), any = room ?? xs[0];
+      (out.cells ??= {})[k] = room ? room.material : null;
+      (out.floor ??= {})[k] = !room && any ? any.material : null;
+      (out.halves ??= {})[k] = any ? e : null;
+    }
+    return out;
+  };
+  /** Whole squares cut by a diagonal, as their two triangles. */
+  const pieces = (sk, keys) => keys.flatMap((k) => {
+    if (k.includes('|')) return [k];
+    const [c, r] = cellOf(k), cut = cutOf(sk.edges, c, r);
+    return cut ? Object.keys(TRI_NAMES[cut]).map((t) => `${k}|${t}`) : [k];
+  });
   const paint = {
-    room(keys, m, out = {}) { for (const k of keys) { (out.cells ??= {})[k] = m; (out.floor ??= {})[k] = null; } return out; },
+    room(keys, m, out = {}) {
+      const sk = current();
+      for (const k of keys) if (!k.includes('|')) { (out.cells ??= {})[k] = m; (out.floor ??= {})[k] = null; if (sk.halves[k]) (out.halves ??= {})[k] = null; }
+      return halves(sk, out, (tri) => { for (const p of keys) if (p.includes('|')) tri(p, () => ({ room: true, material: m })); });
+    },
     floor(keys, m, out = {}) {
       const sk = current();
-      for (const k of keys) { if (k in sk.cells) (out.cells ??= {})[k] = m; else (out.floor ??= {})[k] = m; }
-      return out;
+      const all = pieces(sk, keys);
+      for (const k of all) if (!k.includes('|')) { if (k in sk.cells) (out.cells ??= {})[k] = m; else (out.floor ??= {})[k] = m; }
+      // A triangle of room keeps its walls and takes the new floor.
+      return halves(sk, out, (tri) => { for (const p of all) if (p.includes('|')) tri(p, (x) => ({ room: !!x?.room, material: m })); });
     },
     erase(keys, out = {}) {
       const sk = current();
       const set = new Set(keys);
-      for (const k of keys) { (out.cells ??= {})[k] = null; (out.floor ??= {})[k] = null; }
+      for (const k of keys) if (!k.includes('|')) { (out.cells ??= {})[k] = null; (out.floor ??= {})[k] = null; if (sk.halves[k]) (out.halves ??= {})[k] = null; }
+      halves(sk, out, (tri) => { for (const p of keys) if (p.includes('|')) tri(p, () => null); });
       for (const [id, sh] of Object.entries(sk.shapes)) if (set.has(cellKey(Math.floor(sh.x), Math.floor(sh.y)))) (out.shapes ??= {})[id] = null;
       for (const [id, p] of Object.entries(sk.props)) if (set.has(cellKey(Math.floor(p.x), Math.floor(p.y)))) (out.props ??= {})[id] = null;
       return out;
@@ -156,8 +229,12 @@ export function registerSketch(api) {
     board.invalidate();
   }
 
-  /** The squares under a brush centred on a world point. */
+  /**
+   * The squares under a brush centred on a world point. The smallest brush over a square cut
+   * by a diagonal paints just the triangle under it.
+   */
   function brushCells(w) {
+    if (st.brush === 1) return inScene(...cellAt(w)) ? [pieceAt(current(), w, g())] : [];
     const [c0, r0] = cellAt(w);
     const n = st.brush, lo = -Math.floor((n - 1) / 2);
     const out = [];
@@ -213,7 +290,8 @@ export function registerSketch(api) {
       if (!st.drag) { board.invalidate(); return; }
       st.drag.b = cellAt(w);
       const keys_ = rectCells(st.drag.a, st.drag.b);
-      const patch = st.drag.erase ? paint.erase(keys_) : paint[kind](keys_, st.material);
+      // Over diagonal walls it fills what they enclose, not the corners beyond them.
+      const patch = st.drag.erase ? paint.erase(keys_) : paint[kind](fillPieces(current(), keys_), st.material);
       if (kind === 'room' && !st.drag.erase && st.wallStyle) patch.styles = { ...patch.styles, ...cellEdgeStyles(keys_) };
       setDraft(patch);
     },
@@ -275,12 +353,356 @@ export function registerSketch(api) {
     draw(ctx) {
       if (!st.hover || st.drag) return;
       outline(ctx, eraser || st.mods.shiftKey ? ERASE : HOVER, () => {
-        for (const k of brushCells(st.hover)) { const [c, r] = cellOf(k); ctx.strokeRect(c * g(), r * g(), g(), g()); }
+        for (const k of brushCells(st.hover)) {
+          ctx.beginPath();
+          pieceOutline(k, g()).forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+          ctx.closePath();
+          ctx.stroke();
+        }
       });
     },
   });
   board.registerTool('sketch-brush', brushTool(false));
   board.registerTool('sketch-erase', brushTool(true));
+
+  // ---------------------------------------------------------------- painted ground
+
+  onTerrainReady(() => board.invalidate());
+  const inSquares = (w) => ({ x: w.x / g(), y: w.y / g() });
+  /** The ground slot painted with a material: [id, slot], or [null] for none yet. */
+  const slotOf = (m) => Object.entries(current().terrain?.slots ?? {}).find(([, x]) => x.material === m) ?? [null, null];
+
+  function endTerrainStroke() {
+    const d = st.drag;
+    if (!d?.stroke) return;
+    clearInterval(d.timer);
+    st.drag = null;
+    const s = scene();
+    d.stroke.end().then(({ chunks, used }) => {
+      if (scene()?.id !== s?.id) return;
+      const slots = {};
+      const have = current().terrain?.slots ?? {};
+      if (d.slot && !have[d.slot] && used.has(d.slot)) slots[d.slot] = { material: d.material, scale: st.terrain.scale, edge: st.terrain.edge };
+      for (const id of Object.keys(have)) if (!used.has(id)) slots[id] = null; // a texture painted out everywhere
+      const patch = {};
+      if (chunks) patch.chunks = chunks;
+      if (Object.keys(slots).length) patch.slots = slots;
+      if (Object.keys(patch).length) commit({ terrain: patch });
+    });
+  }
+
+  board.registerTool('sketch-terrain', base({
+    cursor: 'crosshair',
+    down(w, e) {
+      const s = scene();
+      if (!s || board.level) { if (board.level) toast('Ground is painted on the ground level.'); return; }
+      const erase = !!e.shiftKey;
+      const m = st.terrain.material;
+      let [slot] = slotOf(m);
+      if (!erase && !slot) {
+        const taken = new Set(Object.keys(current().terrain?.slots ?? {}));
+        slot = Array.from({ length: MAX_SLOTS }, (_, i) => String(i + 1)).find((id) => !taken.has(id)) ?? null;
+        if (!slot) { toast(`A map can have ${MAX_SLOTS} ground textures. Paint one out (Shift erases) to use another.`, 'error'); return; }
+      }
+      const p = inSquares(w);
+      const d = (st.drag = { stroke: beginStroke(s.id, erase ? null : slot, { ...st.terrain, bounds: { cols: s.width / g(), rows: s.height / g() } }), slot: erase ? null : slot, material: m, last: p, erase, at: performance.now() });
+      d.stroke.line(p, p);
+      // Held still, the brush keeps laying paint down (a low strength builds up).
+      d.timer = setInterval(() => {
+        if (st.drag !== d) { clearInterval(d.timer); return; }
+        if (performance.now() - d.at >= 60) { d.stroke.hold(d.last); d.at = performance.now(); }
+      }, 60);
+      track(w, e);
+    },
+    move(w, e) {
+      track(w, e);
+      if (!st.drag?.stroke) { board.invalidate(); return; }
+      const p = inSquares(w);
+      st.drag.stroke.line(st.drag.last, p);
+      st.drag.last = p;
+      st.drag.at = performance.now();
+    },
+    up() { endTerrainStroke(); },
+    leave() { endTerrainStroke(); st.hover = null; board.invalidate(); },
+    draw(ctx) {
+      if (!st.hover) return;
+      const r = (st.terrain.size / 2) * g();
+      const erase = st.drag ? st.drag.erase : st.mods.shiftKey;
+      outline(ctx, erase ? ERASE : HOVER, () => {
+        ctx.beginPath();
+        ctx.arc(st.hover.x, st.hover.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+      if (st.terrain.soft > 0.05) {
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.setLineDash([4 / board.cam.z, 4 / board.cam.z]);
+        outline(ctx, erase ? ERASE : HOVER, () => {
+          ctx.beginPath();
+          ctx.arc(st.hover.x, st.hover.y, r * (1 - Math.min(0.95, st.terrain.soft)), 0, Math.PI * 2);
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+    },
+  }));
+
+  // ---------------------------------------------------------------- water
+
+  const KIND_NAMES = { ocean: 'Ocean', lake: 'Lake', river: 'River' };
+  const LOOK = ['kind', 'water', 'shore', 'underlay', 'shore_width', 'depth', 'clarity'];
+  const bodiesNow = () => current().water?.bodies ?? {};
+  /** The look being painted: the chosen body's, or the new one's. */
+  const waterLook = () => bodiesNow()[st.water.body] ?? st.water;
+  /** Change the look: the chosen body's (for all of it on the map), or the next new one's. */
+  function setWater(key, v) {
+    const id = st.water.body;
+    if (id && bodiesNow()[id]) commit({ water: { bodies: { [id]: { [key]: v } } } });
+    else st.water[key] = v;
+    renderBar();
+    board.invalidate();
+  }
+
+  function endWaterStroke() {
+    const d = st.drag;
+    if (!d?.water) return;
+    st.drag = null;
+    const s = scene();
+    d.stroke.end().then(({ chunks, flow, used }) => {
+      if (scene()?.id !== s?.id) return;
+      const have = bodiesNow();
+      const bodies = {};
+      if (d.body && !have[d.body] && used.has(d.body)) {
+        bodies[d.body] = Object.fromEntries(LOOK.map((k) => [k, d.look[k]]).filter(([, v]) => v != null));
+      }
+      for (const id of Object.keys(have)) if (!used.has(id)) bodies[id] = null; // painted out everywhere
+      const patch = {};
+      if (chunks) patch.chunks = chunks;
+      if (flow) patch.flow = flow;
+      if (Object.keys(bodies).length) patch.bodies = bodies;
+      if (Object.keys(patch).length) commit({ water: patch });
+      // Go on painting the body just made; one painted out is gone.
+      if (d.body && used.has(d.body)) st.water.body = d.body;
+      if (st.water.body && !used.has(st.water.body)) st.water.body = null;
+      renderBar();
+    });
+  }
+
+  board.registerTool('sketch-water', base({
+    cursor: 'crosshair',
+    down(w, e) {
+      const s = scene();
+      if (!s || board.level) { if (board.level) toast('Water is painted on the ground level.'); return; }
+      const p = inSquares(w);
+      if (e.altKey) {
+        const id = bodyAt(s.id, p.x, p.y);
+        if (id && bodiesNow()[id]) { st.water.body = id; renderBar(); toast(`Painting ${KIND_NAMES[bodiesNow()[id].kind] ?? 'Water'} ${id}`); }
+        return;
+      }
+      const erase = !!e.shiftKey;
+      let id = st.water.body && bodiesNow()[st.water.body] ? st.water.body : null;
+      if (!erase && !id) {
+        const taken = new Set(Object.keys(bodiesNow()));
+        id = Array.from({ length: MAX_BODIES }, (_, i) => String(i + 1)).find((x) => !taken.has(x)) ?? null;
+        if (!id) { toast(`A map can have ${MAX_BODIES} bodies of water. Pick one to go on painting (Alt-click it), or paint one out.`, 'error'); return; }
+      }
+      const look = { ...waterLook() };
+      const stroke = beginWaterStroke(s.id, erase ? null : id, { size: st.water.size, flowing: look.kind === 'river', bounds: { cols: s.width / g(), rows: s.height / g() } });
+      st.drag = { water: true, stroke, body: erase ? null : id, look, last: p, erase };
+      stroke.line(p, p);
+      track(w, e);
+    },
+    move(w, e) {
+      track(w, e);
+      if (!st.drag?.water) { board.invalidate(); return; }
+      const p = inSquares(w);
+      st.drag.stroke.line(st.drag.last, p);
+      st.drag.last = p;
+    },
+    up() { endWaterStroke(); },
+    leave() { endWaterStroke(); st.hover = null; board.invalidate(); },
+    draw(ctx) {
+      if (!st.hover) return;
+      const r = (st.water.size / 2) * g();
+      const erase = st.drag ? st.drag.erase : st.mods.shiftKey;
+      outline(ctx, erase ? ERASE : HOVER, () => {
+        ctx.beginPath();
+        ctx.arc(st.hover.x, st.hover.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+    },
+  }));
+
+  // ---------------------------------------------------------------- tracing buildings off the map
+
+  // Tracing: buildings (each outlined shape) or blocks (what's between the streets); what a new
+  // one gets (floor: none shows the map; roof: none, none); the picture's line and street
+  // lightness (null: as worked out from it); squaring sides up; the biggest shape traced.
+  // `found`: what a dragged box found, shown to pick from before it's built.
+  st.trace = { mode: 'buildings', floor: null, roof: null, walls: true, straighten: true, skipGrey: true, t1: null, t2: null, max: 400, found: null, px: null, busy: false };
+
+  /** The scene's map picture, read once for tracing; null if there's none it can trace. */
+  async function tracePixels() {
+    const s = scene();
+    if (!s?.background) { toast('Tracing needs a map picture on the scene (its Map, in the scene\'s settings).', 'error'); return null; }
+    const t = st.trace;
+    if (t.px?.url === s.background) return t.px.px;
+    if (t.busy) return null;
+    t.busy = true;
+    const slow = setTimeout(() => toast('Reading the map…'), 250);
+    const px = await mapPixels(s);
+    clearTimeout(slow);
+    t.busy = false;
+    if (!px) { toast('This map can\'t be traced (it\'s a video, or the picture didn\'t load).', 'error'); return null; }
+    t.px = { url: s.background, px };
+    renderBar();
+    return px;
+  }
+  const traceOpts = () => { const t = st.trace; return { t1: t.t1 ?? undefined, t2: t.t2 ?? undefined, straighten: t.straighten, skipGrey: t.skipGrey, maxSquares: t.max }; };
+  /** A new building, with the chosen textures. */
+  const newBuilding = (poly) => {
+    const t = st.trace, b = { poly };
+    if (t.floor) b.material = t.floor;
+    if (t.roof) b.roof = t.roof;
+    if (!t.walls) b.walled = false;
+    if (st.wallStyle) b.wall_style = st.wallStyle;
+    return b;
+  };
+  const traceNoun = (n) => `${st.trace.mode === 'blocks' ? 'block' : 'building'}${n === 1 ? '' : 's'}`;
+  const polyCentre = (poly) => poly.reduce((a, [x, y]) => [a[0] + x / poly.length, a[1] + y / poly.length], [0, 0]);
+  const insidePoly = (poly, x, y) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  const tracePath = (ctx, poly) => { ctx.beginPath(); poly.forEach(([x, y], i) => (i ? ctx.lineTo(x * g(), y * g()) : ctx.moveTo(x * g(), y * g()))); ctx.closePath(); };
+
+  /** Build what the box found (those still ticked). */
+  function buildFound() {
+    const t = st.trace;
+    const list = (t.found ?? []).filter((f) => f.on);
+    t.found = null;
+    if (list.length) {
+      commit({ buildings: Object.fromEntries(list.map((f) => [newId(), newBuilding(f.poly)])) });
+      toast(`Built ${list.length} ${traceNoun(list.length)}. Ctrl+Z undoes.`);
+    }
+    renderBar();
+    board.invalidate();
+  }
+  function dropFound() { st.trace.found = null; renderBar(); board.invalidate(); }
+
+  /** A click: the shape under it, built at once; on a traced building, it takes the textures chosen. */
+  async function traceClick(w, e) {
+    const s = scene();
+    const p = inSquares(w);
+    const hit = buildingAt(s, board.level, p.x, p.y);
+    if (e.shiftKey) {
+      if (hit) commit({ buildings: { [hit]: null } }); else toast('Shift-click a traced building to remove it.');
+      return;
+    }
+    if (hit) {
+      const { poly } = buildingsNow()[hit];
+      commit({ buildings: { [hit]: newBuilding(poly) } });
+      toast('Changed to the textures chosen.');
+      return;
+    }
+    const px = await tracePixels();
+    if (!px || scene() !== s) return;
+    const r = traceAt(s, px, w, st.trace.mode, traceOpts());
+    if (r.error) { toast(r.error, 'error'); return; }
+    commit({ buildings: Object.fromEntries(r.polys.map((poly) => [newId(), newBuilding(poly)])) });
+  }
+
+  /** A box: every shape wholly inside it, shown to pick from. */
+  async function traceArea(a, b) {
+    const s = scene();
+    const px = await tracePixels();
+    if (!px || scene() !== s) return;
+    const rect = { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+    const t0 = performance.now();
+    const polys = traceBox(s, px, rect, st.trace.mode, traceOpts());
+    // Not over what's traced already.
+    const fresh = polys.filter((poly) => { const [x, y] = polyCentre(poly); return !buildingAt(s, board.level, x, y); });
+    console.debug(`trace: ${fresh.length} of ${polys.length} in ${Math.round(performance.now() - t0)} ms`);
+    if (!fresh.length) { toast(polys.length ? 'All of those are traced already.' : `No ${traceNoun(2)} wholly inside that box (those crossing its edge are left out).`); return; }
+    st.trace.found = fresh.map((poly) => ({ poly, on: true }));
+    renderBar();
+    board.invalidate();
+  }
+
+  const buildingsNow = () => current().buildings ?? {};
+
+  board.registerTool('sketch-trace', base({
+    cursor: 'crosshair',
+    enter() { api.sketchRefit(); tracePixels(); },
+    leave() { st.hover = null; st.drag = null; st.trace.found = null; },
+    down(w, e) {
+      if (!scene()) return;
+      const found = st.trace.found;
+      if (found) {
+        // Picking from what a box found: a click ticks one off or on.
+        const p = inSquares(w);
+        const f = found.find((x) => insidePoly(x.poly, p.x, p.y));
+        if (f) { f.on = !f.on; renderBar(); board.invalidate(); }
+        return;
+      }
+      st.drag = { trace: true, a: w, b: w, sx: e.clientX, sy: e.clientY, far: false };
+      track(w, e);
+    },
+    move(w, e) {
+      track(w, e);
+      const d = st.drag;
+      if (d?.trace) {
+        d.b = w;
+        if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 6) d.far = true;
+      }
+      board.invalidate();
+    },
+    up(w, e) {
+      const d = st.drag;
+      if (!d?.trace) return;
+      st.drag = null;
+      board.invalidate();
+      if (d.far) traceArea(d.a, w); else traceClick(d.a, e);
+    },
+    key(e) {
+      if (st.trace.found && e.key === 'Enter') { buildFound(); return true; }
+      if (st.trace.found && e.key === 'Escape') { dropFound(); return true; }
+      return keys(e);
+    },
+    draw(ctx) {
+      const found = st.trace.found;
+      if (found) {
+        for (const f of found) {
+          outline(ctx, f.on ? HOVER : ERASE, () => {
+            tracePath(ctx, f.poly);
+            ctx.globalAlpha = f.on ? 0.18 : 0.08;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            if (!f.on) ctx.setLineDash([6 / board.cam.z, 4 / board.cam.z]);
+            ctx.stroke();
+          });
+        }
+        return;
+      }
+      const d = st.drag;
+      if (d?.trace && d.far) {
+        outline(ctx, HOVER, () => {
+          ctx.setLineDash([8 / board.cam.z, 5 / board.cam.z]);
+          ctx.strokeRect(Math.min(d.a.x, d.b.x), Math.min(d.a.y, d.b.y), Math.abs(d.b.x - d.a.x), Math.abs(d.b.y - d.a.y));
+        });
+        return;
+      }
+      // The traced building under the pointer.
+      if (!st.hover) return;
+      const p = inSquares(st.hover);
+      const hit = buildingAt(scene(), board.level, p.x, p.y);
+      if (hit) outline(ctx, st.mods.shiftKey ? ERASE : HOVER, () => { tracePath(ctx, buildingsNow()[hit].poly); ctx.stroke(); });
+    },
+  }));
 
   // ---------------------------------------------------------------- round rooms
 
@@ -333,6 +755,7 @@ export function registerSketch(api) {
 
   /** Is this edge one of a room square's own (room on one side only)? */
   const roomEdge = (e, sk) => {
+    if (isDiagonal(e)) return false;
     const [dir, rest] = e.split(':');
     const [c, r] = cellOf(rest);
     const other = dir === 'h' ? cellKey(c, r - 1) : cellKey(c - 1, r);
@@ -341,10 +764,10 @@ export function registerSketch(api) {
 
   const wallTool = (railing) => base({
     cursor: 'crosshair',
-    down(w, e) { const a = endAt(w, e); st.drag = { a, b: a, remove: e.shiftKey }; this.move(w, e); },
+    down(w, e) { const a = endAt(w, e); st.drag = { a, b: a, remove: e.shiftKey, any: e.altKey }; this.move(w, e); },
     move(w, e) {
       track(w, e);
-      if (st.drag) st.drag.b = endAt(w, e);
+      if (st.drag) { st.drag.any = !!e.altKey; st.drag.b = endAt(w, e, st.drag.a); }
       board.invalidate();
     },
     up(w) {
@@ -356,7 +779,9 @@ export function registerSketch(api) {
         if (!d.remove) return;
         // Shift-click: remove the diagonal wall under the pointer.
         const hit = lineAt(w, sk);
-        if (hit) commit({ lines: { [hit]: null } });
+        if (hit) { commit({ lines: { [hit]: null } }); return; }
+        const diag = diagonalNear(sk, w, g());
+        if (diag) commit({ edges: { [diag]: null } });
         return;
       }
       const onGrid = d.a.concat(d.b).every(Number.isInteger);
@@ -375,7 +800,21 @@ export function registerSketch(api) {
         const edges = {};
         for (const e of along) edges[e] = d.remove ? (own(e) ? 'open' : null) : (own(e) ? null : 'wall');
         const styles = !d.remove && st.wallStyle ? Object.fromEntries(along.map((e) => [e, st.wallStyle])) : null;
-        commit(styles ? { edges, styles } : { edges });
+        const patch = styles ? { edges, styles } : { edges };
+        if (!d.remove && isDiagonal(along[0])) {
+          // One diagonal to a square: a wall the other way across it goes.
+          for (const e of along) { const other = `${e[0] === 'd' ? 'u' : 'd'}${e.slice(1)}`; if (sk.edges[other]) edges[other] = null; }
+          // Across a room's corner it cuts the corner off (Alt: a wall in the room, cutting nothing off).
+          if (!d.any) {
+            const cut = cornerCut(withPatch(sk, { edges }), along);
+            if (cut.length) {
+              patch.cells = Object.fromEntries(cut.map((k) => [k, null]));
+              const painted = cut.filter((k) => sk.halves[k]);
+              if (painted.length) patch.halves = Object.fromEntries(painted.map((k) => [k, null]));
+            }
+          }
+        }
+        commit(patch);
       } else if (!d.remove) {
         commit({ lines: { [newId()]: { a: d.a, b: d.b, kind: 'wall', ...(st.wallStyle ? { style: st.wallStyle } : {}) } } });
       }
@@ -390,7 +829,9 @@ export function registerSketch(api) {
           ctx.beginPath(); ctx.moveTo(d.a[0] * g(), d.a[1] * g()); ctx.lineTo(d.b[0] * g(), d.b[1] * g()); ctx.stroke();
         });
         const len = Math.hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]);
-        if (len) label(ctx, `${Math.round(len * 10) / 10} squares`, d.b[0] * g() + 8 / z, d.b[1] * g());
+        const n45 = Math.abs(d.b[0] - d.a[0]);
+        const at45 = n45 && n45 === Math.abs(d.b[1] - d.a[1]) && d.a.concat(d.b).every(Number.isInteger);
+        if (len) label(ctx, at45 ? `${n45} square${n45 > 1 ? 's' : ''} at 45°` : `${Math.round(len * 10) / 10} squares`, d.b[0] * g() + 8 / z, d.b[1] * g());
       } else if (st.hover) {
         const [c, r] = endAt(st.hover, st.mods);
         outline(ctx, st.mods.shiftKey ? ERASE : HOVER, () => { ctx.beginPath(); ctx.arc(c * g(), r * g(), 4 / z, 0, Math.PI * 2); ctx.fill(); });
@@ -403,9 +844,19 @@ export function registerSketch(api) {
     },
   });
 
-  /** A wall's end: the nearest grid corner, or (Ctrl) right where the pointer is. In squares. */
-  function endAt(w, e) {
-    return free(e) || e?.free ? [fine(w.x / g()), fine(w.y / g())] : cornerAt(w);
+  /**
+   * A wall's end: the nearest grid corner, or (Ctrl) right where the pointer is. In squares.
+   * Dragged from `from`, it keeps to the grid lines and the diagonals at 45° (Alt: any corner).
+   */
+  function endAt(w, e, from = null) {
+    if (free(e) || e?.free) return [fine(w.x / g()), fine(w.y / g())];
+    if (!from || e?.altKey || !from.every(Number.isInteger)) return cornerAt(w);
+    const dx = w.x / g() - from[0], dy = w.y / g() - from[1];
+    const turn = (Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * Math.PI) / 4;
+    const ux = Math.round(Math.cos(turn)), uy = Math.round(Math.sin(turn));
+    // How far that way: the nearest whole step to the pointer.
+    const n = Math.max(0, Math.round((dx * ux + dy * uy) / (ux * ux + uy * uy)));
+    return [from[0] + ux * n, from[1] + uy * n];
   }
 
   board.registerTool('sketch-wall', wallTool(false));
@@ -417,12 +868,34 @@ export function registerSketch(api) {
   const underRoof = (r, w) => {
     const x = w.x / g(), y = w.y / g();
     if (isRound(r)) return ((x - r.x - r.w / 2) / (r.w / 2)) ** 2 + ((y - r.y - r.h / 2) / (r.h / 2)) ** 2 <= 1;
-    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+    return insideRects([r], x, y);
   };
   const roofAt = (w, sk) => Object.entries(sk.roofs).filter(([, r]) => underRoof(r, w)).sort((a, b) => a[1].w * a[1].h - b[1].w * b[1].h)[0]?.[0] ?? null;
   const roofOutline = (ctx, r) => {
     if (isRound(r)) ctx.ellipse((r.x + r.w / 2) * g(), (r.y + r.h / 2) * g(), (r.w / 2) * g(), (r.h / 2) * g(), 0, 0, Math.PI * 2);
-    else ctx.rect(r.x * g(), r.y * g(), r.w * g(), r.h * g());
+    else { cutLoop(r).forEach((p, i) => (i ? ctx.lineTo(p.x * g(), p.y * g()) : ctx.moveTo(p.x * g(), p.y * g()))); ctx.closePath(); }
+  };
+  /**
+   * The 45° corner cuts a roof rectangle needs to follow diagonal walls across its corners:
+   * { nw, ne, se, sw } (the ones it has), or undefined.
+   */
+  const wallCuts = (r, sk) => {
+    const has = (t, c, rr) => sk.edges[`${t}:${c},${rr}`] != null;
+    const { x, y, w, h } = r;
+    const along = {
+      nw: (k, i) => has('u', x + k - 1 - i, y + i),
+      ne: (k, i) => has('d', x + w - k + i, y + i),
+      se: (k, i) => has('u', x + w - 1 - i, y + h - k + i),
+      sw: (k, i) => has('d', x + i, y + h - k + i),
+    };
+    const cuts = {};
+    for (const corner of CORNERS) {
+      for (let k = Math.min(w, h); k >= 1; k--) {
+        if (Array.from({ length: k }, (_, i) => along[corner](k, i)).every(Boolean)) { cuts[corner] = k; break; }
+      }
+    }
+    const fit = cutsOf({ ...r, cuts });
+    return fit ? Object.fromEntries(Object.entries(fit).filter(([, k]) => k > 0)) : undefined;
   };
   /** The walled round room under a point, smallest first. */
   const roundRoomAt = (w, sk) => Object.entries(sk.shapes).filter(([, s]) => s.walled !== false && s.r > 0 && (w.x / g() - s.x) ** 2 + (w.y / g() - s.y) ** 2 <= s.r * s.r).sort((a, b) => a[1].r - b[1].r)[0] ?? null;
@@ -466,6 +939,9 @@ export function registerSketch(api) {
       d.b = cellAt(w);
       const x = Math.min(d.a[0], d.b[0]), y = Math.min(d.a[1], d.b[1]);
       d.roof = { x, y, w: Math.abs(d.a[0] - d.b[0]) + 1, h: Math.abs(d.a[1] - d.b[1]) + 1, material: st.roof };
+      // Diagonal walls across its corners: the roof's corners are cut to follow them.
+      const cuts = wallCuts(d.roof, current());
+      if (cuts) d.roof.cuts = cuts;
       board.invalidate();
     },
     up(w) {
@@ -485,7 +961,7 @@ export function registerSketch(api) {
       const d = st.drag;
       if (d?.roof) {
         drawRoof(ctx, d.roof, g(), board, 0.8);
-        label(ctx, isRound(d.roof) ? `${d.roof.w} across` : `${d.roof.w} × ${d.roof.h}`, d.roof.x * g() + 4 / board.cam.z, d.roof.y * g() - 6 / board.cam.z);
+        label(ctx, isRound(d.roof) ? `${d.roof.w} across` : `${d.roof.w} × ${d.roof.h}${d.roof.cuts ? ', corners at 45°' : ''}`, d.roof.x * g() + 4 / board.cam.z, d.roof.y * g() - 6 / board.cam.z);
       } else if (st.hover) {
         const hit = st.mods.shiftKey && roofAt(st.hover, current());
         if (hit) { const r = current().roofs[hit]; outline(ctx, ERASE, () => { ctx.beginPath(); roofOutline(ctx, r); ctx.stroke(); }); return; }
@@ -575,6 +1051,9 @@ export function registerSketch(api) {
         commit({ shapes: { [rw.id]: copy } });
         return;
       }
+      // A diagonal wall: the opening goes across its square (taken out again, the wall is back).
+      const diag = diagonalNear(sk, w, g());
+      if (diag) { commit({ edges: { [diag]: sk.edges[diag] === k ? 'wall' : k } }); return; }
       const edge = edgeNear(w, g());
       if (!edge) return;
       commit({ edges: { [edge]: sk.edges[edge] === k ? null : k } });
@@ -589,7 +1068,7 @@ export function registerSketch(api) {
         if (hit || rw.stands) outline(ctx, hit ? ERASE : HOVER, () => strokeArc(ctx, rw.shape, a0, a1));
         return;
       }
-      const edge = st.hover && edgeNear(st.hover, g());
+      const edge = st.hover && (diagonalNear(current(), st.hover, g()) ?? edgeNear(st.hover, g()));
       if (!edge) return;
       const { a, b } = edgeSegment(edge, g());
       const set = ['door', 'secret_door', 'window'].includes(current().edges[edge]);
@@ -760,7 +1239,7 @@ export function registerSketch(api) {
     const rw = roundWallAt(w, sk, 0.25);
     const rop = rw && roundOpeningAt(rw.shape, rw.a);
     if (rop) return { type: 'ropening', id: rw.id, oid: rop };
-    const edge = edgeNear(w, g(), 0.2);
+    const edge = diagonalNear(sk, w, g(), 0.2, (v) => OPENINGS.includes(v)) ?? edgeNear(w, g(), 0.2);
     if (edge && OPENINGS.includes(sk.edges[edge])) return { type: 'opening', id: edge };
     let best = null, bestD = PAD() + 2;
     for (const wall of Object.values(sketchWalls(sk, g()))) {
@@ -814,7 +1293,7 @@ export function registerSketch(api) {
     else if (sel.type === 'shape') commit({ shapes: { [sel.id]: null } });
     else if (sel.type === 'line') commit({ lines: { [sel.id]: null } });
     else if (sel.type === 'roof') commit({ roofs: { [sel.id]: null } });
-    else if (sel.type === 'opening') commit({ edges: { [sel.id]: null } });
+    else if (sel.type === 'opening') commit({ edges: { [sel.id]: isDiagonal(sel.id) ? 'wall' : null } });
     else if (sel.type === 'ropening') {
       const copy = structuredClone(sk.shapes[sel.id]);
       delete copy.openings[sel.oid];
@@ -937,9 +1416,11 @@ export function registerSketch(api) {
         const op = { ...o, at: roundAngle(Math.atan2(w.y / G - shape.y, w.x / G - shape.x), shape, e) };
         patch = roundClash(shape, op, sel.oid) ? null : { shapes: { [sel.id]: { ...shape, openings: { ...shape.openings, [sel.oid]: op } } } };
       } else if (sel.type === 'opening') {
-        const target = edgeNear(w, G, 0.5);
-        d.target = target && target !== sel.id && !OPENINGS.includes(current().edges[target]) ? target : null;
-        patch = d.target ? { edges: { [sel.id]: null, [d.target]: o.kind } } : null;
+        // Along a diagonal wall, to another square of diagonal wall; else to another grid edge.
+        const sk = current();
+        const target = isDiagonal(sel.id) ? diagonalNear(sk, w, G, 0.5, (v) => v === 'wall') : edgeNear(w, G, 0.5);
+        d.target = target && target !== sel.id && !OPENINGS.includes(sk.edges[target]) ? target : null;
+        patch = d.target ? { edges: { [sel.id]: isDiagonal(sel.id) ? 'wall' : null, [d.target]: o.kind } } : null;
       }
       setDraft(patch);
     },
@@ -1033,6 +1514,7 @@ export function registerSketch(api) {
   document.getElementById('app')?.append(bar);
   hooks.on('op:sketch_update', () => renderBar());
   hooks.on('op:light_update', () => renderBar());
+  hooks.on('op:world_update', (op) => { if (op.patch?.settings?.sketch) { swatches.clear(); renderBar(); } });
   hooks.on('board:tool', () => renderBar());
 
   function renderBar() {
@@ -1118,6 +1600,7 @@ export function registerSketch(api) {
             if (x.w !== x.h) { x.x = fine(x.x + (x.w - d) / 2); x.y = fine(x.y + (x.h - d) / 2); x.w = x.h = d; }
             x.shape = v;
             delete x.ridge;
+            delete x.cuts;
           } else {
             // Hipped again: back on whole squares.
             x.x = Math.floor(x.x); x.y = Math.floor(x.y); x.w = Math.max(1, Math.round(x.w)); x.h = Math.max(1, Math.round(x.h));
@@ -1125,7 +1608,25 @@ export function registerSketch(api) {
           }
         })),
       ];
-      if (!isRound(r)) items.push(btn('Turn the ridge', 'The ridge runs the other way (a roof on its own; joined roofs follow the building)', () => editSelected((x) => { x.ridge = (x.ridge ?? (x.w >= x.h ? 'h' : 'v')) === 'h' ? 'v' : 'h'; })));
+      if (!isRound(r)) {
+        // Each corner cut off at 45° by so many squares (to follow diagonal walls).
+        const cuts = cutsOf(r) ?? {};
+        const setCut = (corner, v) => editSelected((x) => {
+          x.cuts = { ...(x.cuts ?? {}), [corner]: Math.max(0, Math.round(Number(v) || 0)) };
+          const fit = cutsOf(x);
+          if (fit) x.cuts = Object.fromEntries(Object.entries(fit).filter(([, k]) => k > 0)); else delete x.cuts;
+        });
+        const row = 'display:inline-flex;align-items:center;gap:4px;white-space:nowrap';
+        items.push(el('span', { style: row, title: 'Cut a corner off at 45° by so many squares, to follow diagonal walls' }, el('span.muted', { text: 'Corners at 45°' }),
+          ...CORNERS.map((corner) => el('span', { style: row, title: `The ${corner.toUpperCase()} corner cut off by so many squares` }, el('span.muted', { text: corner.toUpperCase() }),
+            el('input', { type: 'number', min: '0', max: String(Math.min(r.w, r.h)), step: '1', value: String(cuts[corner] ?? 0), style: 'width:3.2em', 'aria-label': `${corner.toUpperCase()} corner cut`, on: { change: (e) => setCut(corner, e.target.value) } })))),
+          btn('Fit to the walls', 'Cut the corners to follow the diagonal walls across them', () => {
+            const fit = wallCuts(r, current());
+            if (!fit && !r.cuts) { toast('No diagonal walls run across this roof’s corners.'); return; }
+            editSelected((x) => { if (fit) x.cuts = fit; else delete x.cuts; });
+          }));
+      }
+      if (!isRound(r) && !cutsOf(r)) items.push(btn('Turn the ridge', 'The ridge runs the other way (a roof on its own; joined roofs follow the building)', () => editSelected((x) => { x.ridge = (x.ridge ?? (x.w >= x.h ? 'h' : 'v')) === 'h' ? 'v' : 'h'; })));
       items.push(del);
     } else if (sel.type === 'opening') {
       const kind = sk.edges[sel.id];
@@ -1227,13 +1728,17 @@ export function registerSketch(api) {
     for (const sc of Object.values(store.world?.scenes ?? {})) {
       for (const sk of [sc.sketch, ...Object.values(sc.level_sketches ?? {})]) {
         if (!sk) continue;
-        for (const m of [...Object.values(sk.cells ?? {}), ...Object.values(sk.floor ?? {}), ...Object.values(sk.shapes ?? {}).map((x) => x.material), sk.outside]) {
+        for (const m of [...Object.values(sk.cells ?? {}), ...Object.values(sk.floor ?? {}), ...Object.values(sk.halves ?? {}).flatMap((e) => Object.values(e).map((v) => v.slice(v.indexOf(':') + 1))), ...Object.values(sk.shapes ?? {}).map((x) => x.material), ...Object.values(sk.buildings ?? {}).map((x) => x.material), sk.outside]) {
           if (m && !texture(m) && !m.startsWith('tex:')) uploaded.add(m);
         }
       }
     }
     for (const m of st.extra ?? []) uploaded.add(m.id);
-    return [...MATERIALS, ...made(), ...[...uploaded].map((url) => ({ id: url, label: st.extra?.find((m) => m.id === url)?.label ?? url.split('/').pop() }))];
+    // Imported from Dungeondraft packs: by name, after the world's own.
+    const lib = libraryTextures();
+    for (const m of lib) uploaded.delete(m.id);
+    return [...MATERIALS, ...made(), ...[...uploaded].map((url) => ({ id: url, label: st.extra?.find((m) => m.id === url)?.label ?? url.split('/').pop() })),
+      ...lib.map((m) => ({ id: m.id, label: m.label, pack: m.pack }))];
   };
   /** What each picker offers, what's chosen, and how to choose. */
   const PICKERS = {
@@ -1244,6 +1749,16 @@ export function registerSketch(api) {
       get: () => st.wallStyle, set: (id) => { st.wallStyle = id; },
     },
     roof: { title: 'Roof', list: () => [...ROOF_MATERIALS, ...made()], get: () => st.roof, set: (id) => { st.roof = id; } },
+    terrain: { title: 'Paint', list: floorChoices, get: () => st.terrain.material, set: (id) => { st.terrain.material = id; } },
+    'water-surface': { title: 'Water', list: floorChoices, get: () => waterLook().water ?? 'water', set: (id) => setWater('water', id) },
+    'water-shore': { title: 'Shore', list: () => [{ id: null, label: 'None' }, ...floorChoices()], get: () => waterLook().shore ?? null, set: (id) => setWater('shore', id) },
+    'water-under': { title: 'Underlay', list: () => [{ id: null, label: 'None: what\'s beneath' }, ...floorChoices()], get: () => waterLook().underlay ?? null, set: (id) => setWater('underlay', id) },
+    'trace-floor': { title: 'Floor', list: () => [{ id: null, label: 'None: the map' }, ...floorChoices()], get: () => st.trace.floor, set: (id) => { st.trace.floor = id; } },
+    'trace-roof': { title: 'Roof', list: () => [{ id: null, label: 'None' }, ...ROOF_MATERIALS, ...made()], get: () => st.trace.roof, set: (id) => { st.trace.roof = id; } },
+    ground: {
+      title: 'Ground', list: () => [{ id: null, label: 'Nothing: the map' }, ...floorChoices()],
+      get: () => current().outside ?? null, set: (id) => { commit({ outside: id }); },
+    },
   };
   // Which tools offer which pickers.
   const OPTIONS = {
@@ -1252,27 +1767,41 @@ export function registerSketch(api) {
     'sketch-floor': ['floor'],
     'sketch-brush': ['floor', 'brush'],
     'sketch-erase': ['brush'],
+    'sketch-terrain': ['terrain', 'terrain-brush', 'terrain-look', 'ground'],
+    'sketch-water': ['water-body', 'water-surface', 'water-shore', 'water-under', 'water-look'],
     'sketch-wall': ['walls'],
     'sketch-roof': ['roof', 'roof-shape', 'roofs-shown'],
     'sketch-place': ['prop'],
+    'sketch-trace': ['trace-mode', 'trace-floor', 'walls', 'trace-roof', 'trace-look', 'roofs-shown'],
   };
   const HINTS = {
-    'sketch-room': 'Shift erases',
+    'sketch-room': 'Shift erases · inside diagonal walls it fills only what they enclose',
     'sketch-round': 'Alt: no walls · Shift-click removes',
     'sketch-floor': 'No walls · Shift erases',
-    'sketch-brush': 'Shift erases · [ ] size',
-    'sketch-erase': '[ ] size',
-    'sketch-wall': 'Shift-drag removes · Ctrl: no snapping',
+    'sketch-brush': 'Shift erases · [ ] size · size 1 paints one triangle of a square cut by a diagonal',
+    'sketch-erase': '[ ] size · size 1 erases one triangle of a square cut by a diagonal',
+    'sketch-terrain': 'Shift erases back to the ground · [ ] size · hold still to build paint up · up to 8 textures a map',
+    'sketch-water': 'Paint rivers the way they run (paint over to turn them) · Shift erases · Alt-click picks a body of water · [ ] size',
+    'sketch-wall': 'Straight or at 45° (a diagonal across a room\'s corner cuts it off) · Alt: any angle, cuts nothing off · Shift-drag removes · Ctrl: no snapping',
     'sketch-railing': 'Railing: blocks movement, not sight · Shift-drag removes',
-    'sketch-door': 'Door: click a grid edge or a round wall · Shift: secret door · click again to remove',
-    'sketch-window': 'Window: click a grid edge or a round wall · click again to remove',
-    'sketch-roof': 'Shift-click removes · round roofs: drag from the middle, or click a round room',
+    'sketch-door': 'Door: click a grid edge, a diagonal wall or a round wall · Shift: secret door · click again to remove',
+    'sketch-window': 'Window: click a grid edge, a diagonal wall or a round wall · click again to remove',
+    'sketch-roof': 'Shift-click removes · over diagonal walls the corners are cut at 45° · round roofs: drag from the middle, or click a round room',
+    'sketch-trace': 'Click inside an outline to build it · drag a box to trace everything inside it · click a traced building to give it these textures · Shift-click removes one',
     'sketch-place': 'Shift+wheel: size · Alt+wheel: turn (Shift+Alt: 1°) · Ctrl: no snapping · right-click: done',
   };
 
   function toolOptions() {
     const tool = board.tool;
     const items = [];
+    if (tool === 'sketch-trace' && st.trace.found) {
+      // What a box found: tick off what isn't wanted, then build the rest.
+      const n = st.trace.found.filter((f) => f.on).length;
+      return [el('b', { text: `Found ${st.trace.found.length} ${traceNoun(st.trace.found.length)}` }),
+        el('span.muted', { text: n === st.trace.found.length ? 'Click one to leave it out.' : `${n} to build; click one to leave it out or put it back.` }),
+        el('button', { type: 'button', class: 'primary', text: `Build ${n}`, disabled: !n, title: 'Build them with the textures chosen (Enter)', on: { click: buildFound } }),
+        el('button', { type: 'button', text: 'Cancel', title: 'Build none of them (Esc)', on: { click: dropFound } })];
+    }
     for (const opt of OPTIONS[tool] ?? []) {
       if (PICKERS[opt]) {
         const pk = PICKERS[opt];
@@ -1290,6 +1819,70 @@ export function registerSketch(api) {
           el('button', { type: 'button', text: '−', title: 'Smaller ([)', on: { click: () => size(-1) } }),
           el('span', { text: `${st.brush} × ${st.brush}` }),
           el('button', { type: 'button', text: '+', title: 'Bigger (])', on: { click: () => size(1) } }));
+      } else if (opt === 'terrain-brush') {
+        const t = st.terrain;
+        const size = (d) => { t.size = terrainSize(t.size, d); board.invalidate(); renderBar(); };
+        items.push(el('span.muted', { text: 'Size' }),
+          el('button', { type: 'button', text: '−', title: 'Smaller ([)', on: { click: () => size(-1) } }),
+          el('span', { text: `${t.size}` }),
+          el('button', { type: 'button', text: '+', title: 'Bigger (])', on: { click: () => size(1) } }),
+          slider('Soft', 'How soft the brush\'s edge is', t.soft, (v) => { t.soft = v; board.invalidate(); }),
+          slider('Strength', 'How much one pass of the brush lays down (low: build it up by going over it, or holding the button)', t.strength, (v) => { t.strength = Math.max(0.05, v); }));
+      } else if (opt === 'terrain-look') {
+        // The texture's own look, for all of it on the map (or for the first stroke of it).
+        const [id, slot] = slotOf(st.terrain.material);
+        const set = (key, v) => {
+          st.terrain[key] = v;
+          if (id) commit({ terrain: { slots: { [id]: { [key]: v } } } });
+        };
+        items.push(slider('Ragged', 'Its edges: 0 blends softly, more makes them rough and sharp', slot?.edge ?? st.terrain.edge, (v) => set('edge', v), true),
+          el('select', { title: 'How big its tile is drawn', on: { change: (e) => set('scale', Number(e.target.value)) } },
+            ...[0.5, 1, 1.5, 2, 3, 4].map((x) => el('option', { value: x, text: `Tile ${x}×`, selected: (slot?.scale ?? st.terrain.scale) === x }))));
+      } else if (opt === 'water-body') {
+        const bodies = bodiesNow();
+        const id = st.water.body && bodies[st.water.body] ? st.water.body : '';
+        items.push(el('select', { title: 'Which body of water you paint: one on the map (its look changes all of it), or a new one', on: { change: (e) => { st.water.body = e.target.value || null; renderBar(); } } },
+          el('option', { value: '', text: 'New water', selected: !id }),
+          ...Object.entries(bodies).map(([b, x]) => el('option', { value: b, text: `${KIND_NAMES[x.kind] ?? 'Water'} ${b}`, selected: b === id }))));
+        const look = waterLook();
+        items.push(el('select', { title: 'Ocean: waves and foam roll in along the shore · Lake: still · River: runs the way you paint it', on: { change: (e) => {
+          const kind = e.target.value;
+          // A new body takes the kind's usual look; one on the map keeps its own.
+          if (!id) Object.assign(st.water, PRESETS[kind]);
+          setWater('kind', kind);
+        } } }, ...KINDS.map((k) => el('option', { value: k, text: KIND_NAMES[k], selected: (look.kind ?? 'lake') === k }))));
+        const t = st.water;
+        const size = (d) => { t.size = terrainSize(t.size, d); board.invalidate(); renderBar(); };
+        items.push(el('span.muted', { text: 'Size' }),
+          el('button', { type: 'button', text: '−', title: 'Smaller ([)', on: { click: () => size(-1) } }),
+          el('span', { text: `${t.size}` }),
+          el('button', { type: 'button', text: '+', title: 'Bigger (])', on: { click: () => size(1) } }));
+      } else if (opt === 'water-look') {
+        const look = waterLook();
+        items.push(slider('Shore', 'How far the shore reaches out from the water (up to 3 squares)', (look.shore_width ?? 0.5) / 3, (v) => setWater('shore_width', Math.round(v * 30) / 10), true),
+          slider('Depth', 'How far out it gets deep and dark: low, it drops off at once; high, the shallows go a long way out', ((look.depth ?? 3) - 1) / 5, (v) => setWater('depth', Math.round((1 + v * 5) * 10) / 10), true),
+          slider('Clarity', 'How much of the underlay shows through: low is murky, high is clear', look.clarity ?? 0.5, (v) => setWater('clarity', v), true),
+          el('label.check', { title: 'Waves roll in and rivers run, for players who have animated maps on (a still picture otherwise)' },
+            el('input', { type: 'checkbox', checked: current().water?.animate !== false, on: { change: (e) => { commit({ water: { animate: e.target.checked } }); board.invalidate(); } } }), ' Moving'));
+      } else if (opt === 'trace-mode') {
+        items.push(el('select', { title: 'Buildings: each outlined shape is one building · Blocks: what\'s between the streets, the buildings in it as one (far fewer walls, for a big city)', on: { change: (e) => { st.trace.mode = e.target.value; renderBar(); } } },
+          el('option', { value: 'buildings', text: 'Trace: buildings', selected: st.trace.mode === 'buildings' }),
+          el('option', { value: 'blocks', text: 'Trace: city blocks', selected: st.trace.mode === 'blocks' })));
+      } else if (opt === 'trace-look') {
+        const t = st.trace, px = t.px?.url === scene()?.background ? t.px.px : null;
+        items.push(el('label.check', { title: 'Walls round what\'s traced (they block sight and movement)' },
+          el('input', { type: 'checkbox', checked: t.walls, on: { change: (e) => { t.walls = e.target.checked; } } }), ' Walls'));
+        items.push(el('label.check', { title: 'Square the sides up to the building\'s own angle (off: follow the outline as drawn)' },
+          el('input', { type: 'checkbox', checked: t.straighten, on: { change: (e) => { t.straighten = e.target.checked; } } }), ' Straighten'));
+        items.push(el('label.check', { title: 'A dragged box leaves out grey shapes (water, roads, yards, a graveyard), for a map whose buildings are coloured. Untick it if the roofs are grey' },
+          el('input', { type: 'checkbox', checked: t.skipGrey, on: { change: (e) => { t.skipGrey = e.target.checked; } } }), ' Skip grey'));
+        if (px) {
+          items.push(slider('Lines', `How dark the map's outlines are: raise it if outlines leak (gaps in them), lower it if dark roofs count as outline (worked out: ${px.t1})`, (t.t1 ?? px.t1) / 255, (v) => { t.t1 = Math.round(v * 255); }, true, 1 / 255));
+          if (t.mode === 'blocks') items.push(slider('Streets', `How light the streets are: lower it if pale roofs count as street (worked out: ${px.t2})`, (t.t2 ?? px.t2) / 255, (v) => { t.t2 = Math.round(v * 255); }, true, 1 / 255));
+          if (t.t1 != null || t.t2 != null) items.push(el('button', { type: 'button', text: '↺', title: 'Back to what was worked out from the map', on: { click: () => { t.t1 = t.t2 = null; renderBar(); } } }));
+        }
+        items.push(el('select', { title: 'The biggest shape traced (squares): bigger ones are taken as streets, squares and parks', on: { change: (e) => { t.max = Number(e.target.value); } } },
+          ...[25, 50, 100, 200, 400, 1000, 4000, 20000].map((x) => el('option', { value: x, text: `Up to ${x} sq`, selected: t.max === x }))));
       } else if (opt === 'roof-shape') {
         items.push(roofShapeSelect(st.roofShape ?? null, (v) => { st.roofShape = v; renderBar(); board.invalidate(); }));
       } else if (opt === 'roofs-shown') {
@@ -1312,6 +1905,18 @@ export function registerSketch(api) {
     return items;
   }
 
+  /** A brush size, one step bigger or smaller. */
+  function terrainSize(v, d) {
+    const steps = [0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20];
+    const i = steps.findIndex((x) => x >= v);
+    return steps[Math.max(0, Math.min(steps.length - 1, (i < 0 ? steps.length - 1 : i) + d))];
+  }
+  /** A labelled 0–1 slider; `commitOnly`: tell only when let go. */
+  function slider(label, title, value, set, commitOnly = false, step = 0.05) {
+    return el('label.opt-slider', { title }, el('span.muted', { text: label }),
+      el('input', { type: 'range', min: 0, max: 1, step, value, on: commitOnly ? { change: (e) => set(Number(e.target.value)) } : { input: (e) => set(Number(e.target.value)) } }));
+  }
+
   /** The open picker: a grid of textures under the bar. */
   function pickerPop(opt) {
     const pk = PICKERS[opt];
@@ -1319,7 +1924,7 @@ export function registerSketch(api) {
     const tiles = pk.list().map((m) => {
       const url = swatchUrl(m.swatch ?? m.id);
       const on = m.id === pk.get();
-      return el('button.opt-tile', { type: 'button', title: m.made ? `${m.label} (made in the texture creator)` : m.label, class: on ? 'opt-tile active' : 'opt-tile', on: { click: () => choose(m.id) } },
+      return el('button.opt-tile', { type: 'button', title: m.made ? `${m.label} (made in the texture creator)` : m.pack ? `${m.label} (from ${m.pack})` : m.label, class: on ? 'opt-tile active' : 'opt-tile', on: { click: () => choose(m.id) } },
         el('span.opt-swatch', { class: url ? 'opt-swatch' : 'opt-swatch ink', style: url ? `background-image: url("${url}")` : '' }),
         el('span', { text: m.label }),
         m.made ? el('span.opt-edit', {
@@ -1329,8 +1934,12 @@ export function registerSketch(api) {
     });
     tiles.push(el('button.opt-tile', { type: 'button', title: 'Make a texture of your own: mix textures and pictures, change their colours, hide the repeat', on: { click: () => { st.pick = null; renderBar(); openTextureCreator(api, { onSaved: (id) => choose(`tex:${id}`) }); } } },
       el('span.opt-swatch.upload', { text: '✦' }), el('span', { text: 'New texture…' })));
-    if (opt === 'floor') tiles.push(el('button.opt-tile', { type: 'button', title: 'Add your own texture: an image that repeats', on: { click: () => { st.pick = null; st.uploadTexture(); } } },
-      el('span.opt-swatch.upload', { text: '+' }), el('span', { text: 'Upload a picture…' })));
+    if (opt === 'floor' || opt === 'terrain' || opt === 'ground' || opt === 'trace-floor' || opt.startsWith('water-')) {
+      tiles.push(el('button.opt-tile', { type: 'button', title: 'Add your own texture: an image that repeats', on: { click: () => { st.pick = null; st.uploadTexture(); } } },
+        el('span.opt-swatch.upload', { text: '+' }), el('span', { text: 'Upload a picture…' })));
+      tiles.push(el('button.opt-tile', { type: 'button', title: 'Import ground, floor and pattern textures from a Dungeondraft asset pack (.dungeondraft_pack)', on: { click: () => { st.pick = null; renderBar(); importPack(api, () => { st.pick = opt; renderBar(); }); } } },
+        el('span.opt-swatch.upload', { text: '⇪' }), el('span', { text: 'Dungeondraft pack…' })));
+    }
     return el('div.opt-pop', { role: 'listbox', 'aria-label': pk.title }, ...tiles);
   }
   // A texture made in the creator changed, or a picture arrived: new swatches, redraw.
@@ -1342,6 +1951,20 @@ export function registerSketch(api) {
 
   function keys(e) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { undo(); return true; }
+    if ((e.key === '[' || e.key === ']') && board.tool === 'sketch-water') {
+      st.water.size = terrainSize(st.water.size, e.key === ']' ? 1 : -1);
+      toast(`Brush: ${st.water.size} squares across`);
+      board.invalidate();
+      renderBar();
+      return true;
+    }
+    if ((e.key === '[' || e.key === ']') && board.tool === 'sketch-terrain') {
+      st.terrain.size = terrainSize(st.terrain.size, e.key === ']' ? 1 : -1);
+      toast(`Brush: ${st.terrain.size} squares across`);
+      board.invalidate();
+      renderBar();
+      return true;
+    }
     if (e.key === '[' || e.key === ']') {
       st.brush = Math.max(1, Math.min(9, st.brush + (e.key === ']' ? 1 : -1)));
       toast(`Brush: ${st.brush} × ${st.brush} squares`);
@@ -1360,7 +1983,7 @@ export function registerSketch(api) {
     if (!sk || !isGM() || sk.size === g()) return;
     send(s, { size: g() });
   };
-  for (const id of ['sketch-room', 'sketch-round', 'sketch-floor', 'sketch-brush', 'sketch-erase', 'sketch-wall', 'sketch-railing', 'sketch-door', 'sketch-window']) {
+  for (const id of ['sketch-room', 'sketch-round', 'sketch-floor', 'sketch-brush', 'sketch-erase', 'sketch-terrain', 'sketch-water', 'sketch-wall', 'sketch-railing', 'sketch-door', 'sketch-window']) {
     const t = board.toolHandlers[id];
     t.enter = () => api.sketchRefit();
   }
@@ -1446,9 +2069,10 @@ export function registerSketch(api) {
   st.clear = () => {
     const s = scene();
     const sk = sketchOf(s, board.level);
-    if (!sk || !MAPS.some((k) => Object.keys(sk[k] ?? {}).length)) { toast('There is no sketch here.'); return; }
+    if (!sk || (!MAPS.some((k) => Object.keys(sk[k] ?? {}).length) && !sk.terrain && !sk.water)) { toast('There is no sketch here.'); return; }
     if (!confirm(`Erase the sketched map on ${levelsOf(s).length > 1 ? levelName(s, board.level) : 'this scene'}, with its walls, doors, windows, props and roofs?`)) return;
     st.undo = st.undo.filter((u) => u.sceneId !== s.id || (u.level ?? '') !== board.level);
-    api.op({ op: 'sketch_update', scene_id: s.id, ...(board.level ? { level: board.level } : {}), patch: Object.fromEntries(MAPS.map((k) => [k, null])), walls: {}, lights: {}, links: {} });
+    api.op({ op: 'sketch_update', scene_id: s.id, ...(board.level ? { level: board.level } : {}), patch: { ...Object.fromEntries(MAPS.map((k) => [k, null])), ...(board.level ? {} : { terrain: null, water: null }) }, walls: {}, lights: {}, links: {} });
+    if (!board.level) { forgetTerrain(s.id); forgetTerrain(s.id, 'water'); forgetWater(s.id); st.water.body = null; }
   };
 }
